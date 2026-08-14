@@ -1,0 +1,23 @@
+#!/bin/sh
+
+. /lib/functions.sh
+
+[ "$(board_name)" = "xiaomi,redmi-router-ax6000-mtkuboot" ] || exit 0
+
+set_ax6000_radio_defaults() {
+	local section="$1"
+	local band
+
+	config_get band "$section" band
+	uci -q set "wireless.${section}.country=US"
+
+	# This build is intended to use 5 GHz only. The radio remains available
+	# in LuCI and can be enabled later without rebuilding the firmware.
+	[ "$band" = "2g" ] && uci -q set "wireless.${section}.disabled=1"
+}
+
+config_load wireless
+config_foreach set_ax6000_radio_defaults wifi-device
+uci -q commit wireless
+
+exit 0
