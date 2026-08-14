@@ -1,0 +1,192 @@
+name: Build Redmi AX6000 firmware
+
+on:
+  workflow_dispatch:
+    inputs:
+      sync_upstream:
+        description: Merge the latest upstream 25.12 branch before building
+        required: true
+        type: boolean
+        default: true
+  schedule:
+    - cron: "0 18 * * 0"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: redmi-ax6000-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CONFIG_FILE: defconfig/mt7986-ax6000.config
+  TARGET_DIR: bin/targets/mediatek/filogic
+  CCACHE_MAXSIZE: 3G
+  TZ: Asia/Singapore
+
+jobs:
+  build:
+    name: MTK U-Boot 110M
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout firmware source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Merge latest upstream source
+        if: ${{ github.event_name == 'schedule' || inputs.sync_upstream }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! git remote get-url upstream >/dev/null 2>&1; then
+            git remote add upstream https://github.com/chasey-dev/immortalwrt-mt798x-rebase.git
+          fi
+          git fetch upstream 25.12
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git merge --no-edit upstream/25.12
+
+      - name: Reclaim runner disk space
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo rm -rf \
+            /usr/local/lib/android \
+            /usr/share/dotnet \
+            /opt/ghc \
+            /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL
+          sudo docker system prune --all --force --volumes || true
+          df -h
+
+      - name: Install host dependencies
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            build-essential clang llvm flex bison gawk gcc-multilib gettext git \
+            libncurses-dev libssl-dev zlib1g-dev python3-dev python3-setuptools \
+            python3-pyelftools python3-cryptography rsync swig unzip file wget \
+            pkg-config ca-certificates xz-utils
+          clang --version
+          for tool in llc llvm-dis opt llvm-strip; do command -v "$tool"; done
+
+      - name: Restore download cache
+        uses: actions/cache@v4
+        with:
+          path: dl
+          key: ax6000-dl-${{ runner.os }}-${{ hashFiles('feeds.conf.default', 'defconfig/mt7986-ax6000.config') }}-${{ github.run_id }}
+          restore-keys: |
+            ax6000-dl-${{ runner.os }}-${{ hashFiles('feeds.conf.default', 'defconfig/mt7986-ax6000.config') }}-
+            ax6000-dl-${{ runner.os }}-
+
+      - name: Restore compiler cache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ax6000-ccache-${{ runner.os }}-${{ hashFiles('defconfig/mt7986-ax6000.config') }}-${{ github.run_id }}
+          restore-keys: |
+            ax6000-ccache-${{ runner.os }}-${{ hashFiles('defconfig/mt7986-ax6000.config') }}-
+            ax6000-ccache-${{ runner.os }}-
+
+      - name: Update and install feeds
+        shell: bash
+        run: |
+          set -euxo pipefail
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+          # Nikki publishes stable and alpha cores with symmetric CONFLICTS.
+          # Keeping both package definitions triggers a Kconfig dependency loop.
+          ./scripts/feeds uninstall mihomo-alpha
+
+      - name: Generate and validate configuration
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cp "$CONFIG_FILE" .config
+          make defconfig
+          sh scripts/validate-ax6000-config.sh .config
+          ./scripts/diffconfig.sh | tee ax6000.diffconfig
+
+      - name: Download sources
+        shell: bash
+        run: |
+          set -o pipefail
+          if ! make -j4 download 2>&1 | tee download.log; then
+            make -j1 V=s download 2>&1 | tee -a download.log
+          fi
+
+      - name: Build firmware
+        shell: bash
+        run: |
+          set -o pipefail
+          if ! make -j4 2>&1 | tee build.log; then
+            make -j1 V=s 2>&1 | tee -a build.log
+          fi
+
+      - name: Verify images and record revisions
+        shell: bash
+        run: |
+          set -euo pipefail
+          factory="$(find "$TARGET_DIR" -maxdepth 1 -type f -name '*ax6000-mtkuboot*squashfs-factory.bin' -print -quit)"
+          sysupgrade="$(find "$TARGET_DIR" -maxdepth 1 -type f -name '*ax6000-mtkuboot*squashfs-sysupgrade.bin' -print -quit)"
+          test -n "$factory"
+          test -n "$sysupgrade"
+
+          image_size="$(stat -c %s "$factory")"
+          image_limit="$((112640 * 1024))"
+          test "$image_size" -le "$image_limit"
+
+          cp .config "$TARGET_DIR/ax6000.config"
+          cp ax6000.diffconfig "$TARGET_DIR/ax6000.diffconfig"
+          {
+            echo "repository=${GITHUB_REPOSITORY}"
+            echo "workflow_commit=$(git rev-parse HEAD)"
+            echo "source_tree=$(git rev-parse 'HEAD^{tree}')"
+            echo "upstream_25_12=$(git rev-parse upstream/25.12 2>/dev/null || echo not-fetched)"
+            echo "build_time=$(date --utc --iso-8601=seconds)"
+            echo "clang=$(clang --version | head -n1)"
+            for feed in feeds/*; do
+              if git -C "$feed" rev-parse HEAD >/dev/null 2>&1; then
+                echo "feed_$(basename "$feed")=$(git -C "$feed" rev-parse HEAD)"
+              fi
+            done
+          } > "$TARGET_DIR/build-metadata.txt"
+
+          sha256sum "$factory" "$sysupgrade" > "$TARGET_DIR/ax6000-images.sha256"
+          du -h "$factory" "$sysupgrade"
+          cat "$TARGET_DIR/build-metadata.txt"
+
+      - name: Upload firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: redmi-ax6000-mtkuboot-${{ github.run_number }}
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            ${{ env.TARGET_DIR }}/*ax6000-mtkuboot*
+            ${{ env.TARGET_DIR }}/ax6000.config
+            ${{ env.TARGET_DIR }}/ax6000.diffconfig
+            ${{ env.TARGET_DIR }}/ax6000-images.sha256
+            ${{ env.TARGET_DIR }}/build-metadata.txt
+            ${{ env.TARGET_DIR }}/config.buildinfo
+            ${{ env.TARGET_DIR }}/feeds.buildinfo
+            ${{ env.TARGET_DIR }}/profiles.json
+            ${{ env.TARGET_DIR }}/sha256sums
+            ${{ env.TARGET_DIR }}/version.buildinfo
+
+      - name: Upload failure logs
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: redmi-ax6000-failure-logs-${{ github.run_number }}
+          if-no-files-found: ignore
+          retention-days: 7
+          path: |
+            build.log
+            download.log
+            logs
