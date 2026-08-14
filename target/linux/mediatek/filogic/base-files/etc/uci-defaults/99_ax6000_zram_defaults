@@ -1,0 +1,12 @@
+#!/bin/sh
+
+. /lib/functions.sh
+
+[ "$(board_name)" = "xiaomi,redmi-router-ax6000-mtkuboot" ] || exit 0
+
+# Keep compressed swap as an emergency reserve. A low swappiness avoids
+# reclaiming into zram during normal latency-sensitive traffic.
+printf '%s\n' 'vm.swappiness=10' > /etc/sysctl.d/99-ax6000-zram.conf
+sysctl -qw vm.swappiness=10
+
+exit 0
