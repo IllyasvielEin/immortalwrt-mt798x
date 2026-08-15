@@ -317,8 +317,10 @@ export function convert(uci_cfg) {
 		set_token("DtimPeriod", c.dtim_period);
 		set_token("RekeyInterval", c.wpa_group_rekey);
 
-		// 802.11k/v/w
+		// 802.11k/v. These settings require a driver reload; see
+		// REINSTALL_CFGS in dat-defs.json.
 		set_token("RRMEnable", strict_bool(c.ieee80211k));
+		set_token("WNMEnable", strict_bool(c.ieee80211v));
 		
 		// HT settings
 		set_token("HT_AMSDU", strict_bool(c.amsdu));

@@ -1310,8 +1310,12 @@ return view.extend({
 					o = ss.taboption('advanced', form.Flag, 'isolate', _('Isolate Clients'), _('Prevents client-to-client communication'));
 					o.depends('mode', 'ap');
 
-					o = ss.taboption('advanced', form.Flag, 'ieee80211k', _('802.11k RRM'), _('Radio Resource Measurement - Sends beacons to assist roaming. Not all clients support this.'));
+					o = ss.taboption('advanced', form.Flag, 'ieee80211k', _('802.11k RRM'), _('Advertise radio measurements which can help clients discover a better access point. The client still decides when to roam.'));
 					o.default = o.enabled;
+					o.depends('mode', 'ap');
+
+					o = ss.taboption('advanced', form.Flag, 'ieee80211v', _('802.11v WNM'), _('Enable BSS Transition Management hints. This can assist roaming between different vendors when the SSID and security settings match, but the client still makes the final decision.'));
+					o.default = o.disabled;
 					o.depends('mode', 'ap');
 
 					o = ss.taboption('advanced', form.Value, 'wpa_group_rekey', _('Time interval for rekeying GTK'), _('sec'));

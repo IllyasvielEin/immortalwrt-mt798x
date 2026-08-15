@@ -1,0 +1,43 @@
+mtk: mt_wifi: merge WNMEnable for DBDC profiles
+
+MT7986 loads the 2.4 GHz and 5 GHz DAT files through the driver's
+multi-profile path.  The WNM parser consumes the merged buffer, but the
+merge code only carried RRMEnable across from both profiles.  As a result,
+WNMEnable from the second profile (normally the 5 GHz radio) was discarded.
+
+Merge the per-BSS WNMEnable values in the same way as RRMEnable so 802.11v
+can be enabled independently on either DBDC radio.
+
+--- a/mt_wifi/embedded/common/multi_profile.c
++++ b/mt_wifi/embedded/common/multi_profile.c
+@@ -3773,6 +3773,18 @@ static INT multi_profile_merge_rrm(
+ }
+ #endif
+ 
++#ifdef CONFIG_DOT11V_WNM
++static INT multi_profile_merge_wnm(
++	struct mpf_data *data,
++	CHAR *buf1,
++	CHAR *buf2,
++	CHAR *final)
++{
++	multi_profile_merge_separate("WNMEnable", buf1, buf2, final);
++	return NDIS_STATUS_SUCCESS;
++}
++#endif
++
+ #ifdef DSCP_PRI_SUPPORT
+ INT multi_profile_merge_dscp_pri(
+ 	struct mpf_data *data,
+@@ -4147,6 +4158,11 @@ static INT multi_profile_merge(
+ 		return retval;
+ #endif
+ 
++#ifdef CONFIG_DOT11V_WNM
++	if (multi_profile_merge_wnm(data, buf1, buf2, final) != NDIS_STATUS_SUCCESS)
++		return retval;
++#endif
++
+ #ifdef DSCP_PRI_SUPPORT
+ 	if (multi_profile_merge_dscp_pri(data, buf1, buf2, final) != NDIS_STATUS_SUCCESS)
+ 		return retval;

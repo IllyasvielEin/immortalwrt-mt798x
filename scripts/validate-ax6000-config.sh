@@ -17,6 +17,15 @@ require_y() {
 	}
 }
 
+require_value() {
+	symbol="$1"
+	value="$2"
+	grep -qx "${symbol}=${value}" "$config" || {
+		echo "Required symbol value is missing: ${symbol}=${value}" >&2
+		exit 1
+	}
+}
+
 reject_package() {
 	package="$1"
 	if grep -Eq "^CONFIG_PACKAGE_${package}=[ym]$" "$config"; then
@@ -33,6 +42,35 @@ for symbol in \
 	CONFIG_KERNEL_NETKIT \
 	CONFIG_KERNEL_XDP_SOCKETS \
 	CONFIG_BPF_TOOLCHAIN_HOST \
+	CONFIG_PACKAGE_kmod-mediatek_hnat \
+	CONFIG_PACKAGE_kmod-mt_wifi \
+	CONFIG_PACKAGE_kmod-warp \
+	CONFIG_MTK_MT_WIFI_DRIVER_VERSION_7673 \
+	CONFIG_MTK_MT_WIFI_MT7986_20260601 \
+	CONFIG_MTK_WIFI_FW_BIN_LOAD \
+	CONFIG_MTK_DBDC_MODE \
+	CONFIG_MTK_WARP_V2 \
+	CONFIG_MTK_FAST_NAT_SUPPORT \
+	CONFIG_MTK_HDR_TRANS_RX_SUPPORT \
+	CONFIG_MTK_HDR_TRANS_TX_SUPPORT \
+	CONFIG_MTK_RED_SUPPORT \
+	CONFIG_MTK_CFG_SUPPORT_FALCON_MURU \
+	CONFIG_MTK_MUMIMO_SUPPORT \
+	CONFIG_MTK_MU_RA_SUPPORT \
+	CONFIG_MTK_TXBF_SUPPORT \
+	CONFIG_MTK_WIFI_TWT_SUPPORT \
+	CONFIG_MTK_SCS_FW_OFFLOAD \
+	CONFIG_MTK_SMART_CARRIER_SENSE_SUPPORT \
+	CONFIG_MTK_MT_DFS_SUPPORT \
+	CONFIG_MTK_MAP_SUPPORT \
+	CONFIG_MTK_MAP_R2_VER_SUPPORT \
+	CONFIG_MTK_MAP_R3_VER_SUPPORT \
+	CONFIG_MTK_DOT11K_RRM_SUPPORT \
+	CONFIG_MTK_DOT11R_FT_SUPPORT \
+	CONFIG_MTK_DOT11W_PMF_SUPPORT \
+	CONFIG_MTK_WNM_SUPPORT \
+	CONFIG_MTK_WPA3_SUPPORT \
+	CONFIG_WED_HW_RRO_SUPPORT \
 	CONFIG_PACKAGE_luci-app-turboacc-mtk \
 	CONFIG_PACKAGE_luci-app-eqos-mtk \
 	CONFIG_PACKAGE_luci-app-nikki \
@@ -46,6 +84,28 @@ for symbol in \
 do
 	require_y "$symbol"
 done
+
+require_value CONFIG_MTK_WHNAT_SUPPORT m
+require_value CONFIG_MTK_MT_WIFI_FIRMWARE_PATH_MT7986 '"mt7986-fw-20260601"'
+require_value CONFIG_WARP_CHIPSET '"mt7986"'
+require_value CONFIG_WARP_VERSION 2
+
+converter="package/mtk/applications/mtwifi-cfg-ucode/files/usr/share/ucode/mtwifi/converter.uc"
+for mapping in \
+	'RRMEnable.*ieee80211k' \
+	'WNMEnable.*ieee80211v'
+do
+	grep -Eq "$mapping" "$converter" || {
+		echo "Missing MTK roaming mapping: $mapping" >&2
+		exit 1
+	}
+done
+
+wnm_dbdc_patch="package/mtk/drivers/mt_wifi/patches-7673/041-merge-wnm-dbdc-profile.patch"
+grep -q 'multi_profile_merge_separate("WNMEnable"' "$wnm_dbdc_patch" || {
+	echo "Missing MTK DBDC WNM profile merge fix" >&2
+	exit 1
+}
 
 profile_count="$(grep -Ec '^CONFIG_TARGET_mediatek_filogic_DEVICE_.+=y$' "$config" || true)"
 [ "$profile_count" -eq 1 ] || {

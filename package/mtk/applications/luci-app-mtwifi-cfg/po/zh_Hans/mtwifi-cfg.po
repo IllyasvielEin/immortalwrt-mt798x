@@ -34,6 +34,18 @@ msgstr "弱信号接入阈值"
 msgid "Wireless HWNAT"
 msgstr "无线硬件加速"
 
+msgid "802.11k RRM"
+msgstr "802.11k 无线资源测量（RRM）"
+
+msgid "Advertise radio measurements which can help clients discover a better access point. The client still decides when to roam."
+msgstr "广播无线资源测量信息，帮助终端发现更合适的接入点；是否漫游仍由终端决定。"
+
+msgid "802.11v WNM"
+msgstr "802.11v 无线网络管理（WNM）"
+
+msgid "Enable BSS Transition Management hints. This can assist roaming between different vendors when the SSID and security settings match, but the client still makes the final decision."
+msgstr "启用 BSS 过渡管理提示。SSID 和安全设置一致时可辅助不同品牌 AP 间漫游，但最终仍由终端决定是否切换。"
+
 msgid "Wireless configuration error"
 msgstr "无线网络设置错误"
 
