@@ -102,10 +102,20 @@ do
 done
 
 wnm_dbdc_patch="package/mtk/drivers/mt_wifi/patches-7673/041-merge-wnm-dbdc-profile.patch"
-grep -q 'multi_profile_merge_separate("WNMEnable"' "$wnm_dbdc_patch" || {
+grep -q 'multi_profile_merge_perbss(data, "WNMEnable".*MPF_APPEND_0' "$wnm_dbdc_patch" || {
 	echo "Missing MTK DBDC WNM profile merge fix" >&2
 	exit 1
 }
+
+for profile in \
+	package/mtk/drivers/wifi-profile/files/mt7986/mt7986-ax6000.dbdc.b0.dat \
+	package/mtk/drivers/wifi-profile/files/mt7986/mt7986-ax6000.dbdc.b1.dat
+do
+	grep -qx 'WNMEnable=0' "$profile" || {
+		echo "Missing AX6000 WNM default: $profile" >&2
+		exit 1
+	}
+done
 
 profile_count="$(grep -Ec '^CONFIG_TARGET_mediatek_filogic_DEVICE_.+=y$' "$config" || true)"
 [ "$profile_count" -eq 1 ] || {

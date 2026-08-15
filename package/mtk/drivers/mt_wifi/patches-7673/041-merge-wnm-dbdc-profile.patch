@@ -5,12 +5,14 @@ multi-profile path.  The WNM parser consumes the merged buffer, but the
 merge code only carried RRMEnable across from both profiles.  As a result,
 WNMEnable from the second profile (normally the 5 GHz radio) was discarded.
 
-Merge the per-BSS WNMEnable values in the same way as RRMEnable so 802.11v
-can be enabled independently on either DBDC radio.
+Merge the per-BSS WNMEnable values and default a missing band's values to
+zero.  The fallback is required when sysupgrade preserves an older DAT file
+without WNMEnable, especially when the disabled 2.4 GHz radio is never
+rewritten by netifd.
 
 --- a/mt_wifi/embedded/common/multi_profile.c
 +++ b/mt_wifi/embedded/common/multi_profile.c
-@@ -3773,6 +3773,18 @@ static INT multi_profile_merge_rrm(
+@@ -3773,6 +3773,17 @@ static INT multi_profile_merge_rrm(
  }
  #endif
  
@@ -21,15 +23,14 @@ can be enabled independently on either DBDC radio.
 +	CHAR *buf2,
 +	CHAR *final)
 +{
-+	multi_profile_merge_separate("WNMEnable", buf1, buf2, final);
-+	return NDIS_STATUS_SUCCESS;
++	return multi_profile_merge_perbss(data, "WNMEnable", buf1, buf2, final, MPF_APPEND_0);
 +}
 +#endif
 +
  #ifdef DSCP_PRI_SUPPORT
  INT multi_profile_merge_dscp_pri(
  	struct mpf_data *data,
-@@ -4147,6 +4158,11 @@ static INT multi_profile_merge(
+@@ -4147,6 +4157,11 @@ static INT multi_profile_merge(
  		return retval;
  #endif
  
