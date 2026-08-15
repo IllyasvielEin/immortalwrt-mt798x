@@ -38,6 +38,7 @@
 		"HT_STBC": "1",
 		"IgmpSnEnable": "0",
 		"RRMEnable": "1",
+		"WNMEnable": "0",
 		"VHT_BW_SIGNAL": "0",
 		"VHT_LDPC": "1",
 		"VHT_SGI": "1",
@@ -71,7 +72,9 @@
 		"E2pAccessMode",
 		"HT_RxStream",
 		"HT_TxStream",
-		"WdsEnable"
+		"WdsEnable",
+		"RRMEnable",
+		"WNMEnable"
 	],
 	"IWPRIV_AP_CFGS": {
 		"kicklow": [ "KickStaRssiLow", "0" ],
