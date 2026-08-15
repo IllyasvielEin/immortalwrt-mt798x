@@ -73,7 +73,7 @@ jobs:
             python3-pyelftools python3-cryptography rsync swig unzip file wget \
             pkg-config ca-certificates xz-utils
           clang --version
-          for tool in llc llvm-dis opt llvm-strip; do command -v "$tool"; done
+          for tool in llc llvm-dis llvm-nm opt llvm-strip; do command -v "$tool"; done
 
       - name: Restore download cache
         uses: actions/cache@v4
@@ -127,6 +127,25 @@ jobs:
           if ! make -j4 2>&1 | tee build.log; then
             make -j1 V=s 2>&1 | tee -a build.log
           fi
+
+      - name: Verify MTK driver artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mt_wifi_module="$(find build_dir -type f -path '*/mt_wifi_ap/mt_wifi.ko' -print -quit)"
+          test -n "$mt_wifi_module"
+          llvm-nm "$mt_wifi_module" > mt-wifi.symbols
+          for symbol in \
+            RRM_ReadParametersFromFile \
+            WNM_ReadParametersFromFile \
+            FT_rtmp_read_parameters_from_file
+          do
+            grep -qw "$symbol" mt-wifi.symbols
+          done
+          for module in mtk_warp.ko mtk_warp_proxy.ko mtkhnat.ko
+          do
+            test -n "$(find build_dir -type f -name "$module" -print -quit)"
+          done
 
       - name: Verify images and record revisions
         shell: bash
