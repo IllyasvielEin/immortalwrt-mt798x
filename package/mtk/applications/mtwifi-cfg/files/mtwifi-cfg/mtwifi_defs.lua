@@ -57,6 +57,7 @@ mtwifi_defs.vif_cfgs = {
     ["HT_STBC"] = "1",
     ["IgmpSnEnable"] = "0",
     ["RRMEnable"] = "1",
+    ["WNMEnable"] = "0",
     ["VHT_BW_SIGNAL"] = "0",
     ["VHT_LDPC"] = "1",
     ["VHT_SGI"] = "1",
@@ -91,7 +92,8 @@ mtwifi_defs.chip_cfgs = {
 
 mtwifi_defs.reinstall_cfgs = {
     "BssidNum", "WHNAT", "E2pAccessMode",
-    "HT_RxStream", "HT_TxStream", "WdsEnable"
+    "HT_RxStream", "HT_TxStream", "WdsEnable",
+    "RRMEnable", "WNMEnable"
 }
 
 mtwifi_defs.iwpriv_ap_cfgs = {
