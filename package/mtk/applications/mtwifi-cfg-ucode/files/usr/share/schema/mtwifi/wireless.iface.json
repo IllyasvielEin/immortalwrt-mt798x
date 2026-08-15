@@ -92,6 +92,10 @@
             "type": "boolean",
             "description": "Enable 802.11k support"
         },
+        "ieee80211v": {
+            "type": "boolean",
+            "description": "Enable 802.11v Wireless Network Management"
+        },
         "mumimo_dl": {
             "type": "boolean",
             "description": "Enable MU-MIMO DL"
