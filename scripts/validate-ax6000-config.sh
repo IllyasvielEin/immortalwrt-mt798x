@@ -89,6 +89,32 @@ require_value CONFIG_MTK_WHNAT_SUPPORT m
 require_value CONFIG_MTK_MT_WIFI_FIRMWARE_PATH_MT7986 '"mt7986-fw-20260601"'
 require_value CONFIG_WARP_CHIPSET '"mt7986"'
 require_value CONFIG_WARP_VERSION 2
+require_value CONFIG_FEED_video m
+require_value CONFIG_FEED_nikki m
+
+nikki_key="files/etc/apk/keys/nikki.pem"
+nikki_key_sha256="677ef1af372065e2e856175363e2da9471a6c5c6443563b912c8d325bfa1fbad"
+[ -f "$nikki_key" ] || {
+	echo "Missing Nikki APK public key: $nikki_key" >&2
+	exit 1
+}
+actual_nikki_key_sha256="$(sha256sum "$nikki_key" | awk '{print $1}')"
+[ "$actual_nikki_key_sha256" = "$nikki_key_sha256" ] || {
+	echo "Unexpected Nikki APK public key fingerprint: $actual_nikki_key_sha256" >&2
+	exit 1
+}
+
+nikki_feed_file="files/etc/apk/repositories.d/customfeeds.list"
+nikki_feed_url="https://nikkinikki.pages.dev/openwrt-25.12/aarch64_cortex-a53/nikki/packages.adb"
+[ -f "$nikki_feed_file" ] || {
+	echo "Missing Nikki APK feed configuration: $nikki_feed_file" >&2
+	exit 1
+}
+nikki_feed_count="$(grep -Fxc "$nikki_feed_url" "$nikki_feed_file" || true)"
+[ "$nikki_feed_count" -eq 1 ] || {
+	echo "Nikki APK feed must appear exactly once: $nikki_feed_url" >&2
+	exit 1
+}
 
 converter="package/mtk/applications/mtwifi-cfg-ucode/files/usr/share/ucode/mtwifi/converter.uc"
 for mapping in \
