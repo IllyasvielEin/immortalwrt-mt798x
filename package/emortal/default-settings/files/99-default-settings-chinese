@@ -26,14 +26,20 @@ if uci -q get system.@imm_init[0].opkg_mirror > "/dev/null"; then
 fi
 
 apk_mirror="$(uci -q get system.@imm_init[0].apk_mirror)"
-if [ -z "$apk_mirror" ]; then
-	apk_mirror="https://mirrors.vsean.net/openwrt"
-	uci -q batch <<-EOF
-		set system.@imm_init[0].apk_mirror="$apk_mirror"
-		commit system
-	EOF
-fi
+case "$apk_mirror" in
+	""|"https://mirrors.vsean.net/openwrt")
+		apk_mirror="https://mirrors.vsean.net/immortalwrt"
+		uci -q batch <<-EOF
+			set system.@imm_init[0].apk_mirror="$apk_mirror"
+			commit system
+		EOF
+		;;
+esac
 
-sed -i.bak "s,https://downloads.immortalwrt.org,$apk_mirror,g" "/etc/apk/repositories.d/distfeeds.list"
+apk_mirror_sed="$(printf '%s\n' "$apk_mirror" | sed 's/[\\&,]/\\&/g')"
+sed -i.bak \
+	-e "s,https://downloads.immortalwrt.org,$apk_mirror_sed,g" \
+	-e "s,https://mirrors.vsean.net/openwrt,$apk_mirror_sed,g" \
+	"/etc/apk/repositories.d/distfeeds.list"
 
 exit 0
