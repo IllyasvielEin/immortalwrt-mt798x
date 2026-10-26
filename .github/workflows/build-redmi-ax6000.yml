@@ -8,8 +8,6 @@ on:
         required: true
         type: boolean
         default: true
-  schedule:
-    - cron: "0 18 * * 0"
 
 permissions:
   contents: read
@@ -37,7 +35,7 @@ jobs:
           fetch-depth: 0
 
       - name: Merge latest upstream source
-        if: ${{ github.event_name == 'schedule' || inputs.sync_upstream }}
+        if: ${{ inputs.sync_upstream }}
         shell: bash
         run: |
           set -euo pipefail
