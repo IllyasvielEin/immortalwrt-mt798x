@@ -1,0 +1,719 @@
+Subject: [PATCH] mt_wifi: add opt-in per-MAC roaming path diagnostics
+
+For mt79xx 7.6.7.3 after the Build17 42-patch series. Default off.
+No forwarding, station lifetime, isolation or acceleration policy changes.
+Capture packet metadata before forwarding, mark actual decision branches,
+and capture the WCID/wdev actually written to the forwarding descriptor.
+Packet logs do not re-read entry/wdev/skb after submission. Slot observations
+and deletion counters are not an atomic station-generation guarantee.
+send_data_pkt return codes prove submission only, not RF delivery.
+Log originating maintenance decisions and peer management reason codes.
+Shared budgets of 64 packet-stage and 16 deletion/management log records
+per HZ window expose suppression through read-only roam_diag_stats.
+Counters are cumulative and not a cross-counter snapshot. Missing output
+alone never proves path absence.
+Packet scope: selected MACs, untagged IPv4 TCP SYN/RST, selected port.
+Management/deletion scope: selected MACs, metadata and reason codes only.
+
+--- a/mt_wifi/embedded/ap/ap.c
++++ b/mt_wifi/embedded/ap/ap.c
+@@ -3920,6 +3920,8 @@
+ #endif
+ 				{
+ 					bDisconnectSta = TRUE;
++					mt_roam_diag_delete(pAd, pEntry, pEntry->Addr, wcid,
++						"cause-ageout", -1, OS_TRACE);
+ 					MTWF_DBG(pAd, DBG_CAT_AP, DBG_SUBCAT_ALL, DBG_LVL_INFO,
+ 						"ageout "MACSTR" after %d-sec silence\n",
+ 							 MAC2STR(pEntry->Addr), sta_idle_timeout);
+@@ -3986,6 +3988,8 @@
+ #endif
+ 			{
+ 				bDisconnectSta = TRUE;
++				mt_roam_diag_delete(pAd, pEntry, pEntry->Addr, wcid,
++					"cause-txfail", -1, OS_TRACE);
+ 				MTWF_DBG(pAd, DBG_CAT_AP, DBG_SUBCAT_ALL, DBG_LVL_INFO,
+ 						"STA-"MACSTR" had left (%d %lu)\n", MAC2STR(pEntry->Addr),
+ 						 pEntry->ContinueTxFailCnt, pAd->ApCfg.EntryLifeCheck);
+@@ -4032,6 +4036,8 @@
+ 		if ( pEntry->RssiSample.Rssi_Updated && pMbss->RssiLowForStaKickOut &&
+ 			(avgRssi < pMbss->RssiLowForStaKickOut)) {
+ 			bDisconnectSta = TRUE;
++			mt_roam_diag_delete(pAd, pEntry, pEntry->Addr, wcid,
++				"cause-rssi", -1, OS_TRACE);
+ 			MTWF_DBG(pAd, DBG_CAT_AP, DBG_SUBCAT_ALL, DBG_LVL_NOTICE,
+ 					 "Disassoc STA "MACSTR", RSSI Kickout Thres[%d]-[%d]\n",
+ 					  MAC2STR(pEntry->Addr), pMbss->RssiLowForStaKickOut,	avgRssi);
+--- a/mt_wifi/embedded/ap/ap_data.c
++++ b/mt_wifi/embedded/ap/ap_data.c
+@@ -4034,6 +4034,7 @@
+ 
+ INT ap_rx_pkt_foward(RTMP_ADAPTER *pAd, struct wifi_dev *wdev, PNDIS_PACKET pPacket)
+ {
++	struct mt_roam_diag_ctx diag;
+ 	MAC_TABLE_ENTRY *pEntry = NULL;
+ 	MAC_TABLE_ENTRY *pSrcEntry = NULL;
+ 	BOOLEAN to_os, to_air;
+@@ -4042,20 +4043,26 @@
+ 	BSS_STRUCT *pMbss;
+ 	struct wifi_dev *dst_wdev = NULL;
+ 	UINT16 wcid;
+-#ifdef A4_CONN
+ 	INT Ret;
+-#endif /* A4_CONN */
+ 	PHEADER_802_3 pHDR = NULL;
+ 
++	mt_roam_diag_init(&diag, wdev, pPacket);
+ 	if (!VALID_MBSS(pAd, wdev->func_idx)) {
++		if (diag.active)
++			diag.path = "invalid-mbss";
++		mt_roam_diag_packet(&diag, MT_ROAM_DIAG_FORWARD, FALSE, FALSE);
+ 		MTWF_DBG(pAd, DBG_CAT_AP, DBG_SUBCAT_ALL, DBG_LVL_ERROR, "Invalid func_idx(%d), type(%d)!\n",
+ 				 wdev->func_idx, wdev->wdev_type);
+ 		return FALSE;
+ 	}
+ 
+ 	/* only one connected sta, directly to upper layer */
+-	if (pAd->MacTab.Size <= 1)
++	if (pAd->MacTab.Size <= 1) {
++		if (diag.active)
++			diag.path = "single-station";
++		mt_roam_diag_packet(&diag, MT_ROAM_DIAG_FORWARD, TRUE, FALSE);
+ 		return TRUE;
++	}
+ 
+ 	/* TODO: shiang-usw, remove pMbss structure here to make it more generic! */
+ 	pMbss = &pAd->ApCfg.MBSSID[wdev->func_idx];
+@@ -4066,6 +4073,8 @@
+ 	to_air = FALSE;
+ 
+ 	if (pHeader802_3[0] & 0x01) {
++		if (diag.active)
++			diag.path = "multicast";
+ 		if ((pMbss->StaCount > 1)
+ #ifdef P2P_SUPPORT
+ 			|| (pAd->P2pCfg.bSigmaEnabled == TRUE)
+@@ -4077,11 +4086,22 @@
+ 	} else {
+ 		/* if destinated STA is a associated wireless STA */
+ 		pEntry = MacTableLookup(pAd, pHeader802_3);
+-
+-		if (pEntry && pEntry->Sst == SST_ASSOC && pEntry->wdev) {
++		if (diag.active) {
++			diag.lookup_hit = pEntry != NULL;
++			diag.lookup_slot = mt_roam_diag_entry_slot(pAd, pEntry);
++			diag.path = pEntry ? "sta-test-rejected" : "lookup-miss";
++		}
++
++		if (pEntry && (diag.lookup_sst = pEntry->Sst) == SST_ASSOC && pEntry->wdev) {
+ 			dst_wdev = pEntry->wdev;
++			if (diag.active)
++				diag.dst_wdev_slot = mt_roam_diag_wdev_slot(pAd, dst_wdev);
+ 
+ 			if (wdev == dst_wdev) {
++				if (diag.active) {
++					diag.path = "sta-same-wdev";
++					diag.same_wdev = 1;
++				}
+ 				/*
+ 					STAs in same SSID, default send to air and not to os,
+ 					but not to air if match following case:
+@@ -4093,6 +4113,10 @@
+ 				if (pMbss->IsolateInterStaTraffic == 1)
+ 					to_air = FALSE;
+ 			} else {
++				if (diag.active) {
++					diag.path = "sta-other-wdev";
++					diag.same_wdev = 0;
++				}
+ 				/*
+ 					STAs in different SSID, default send to os and not to air
+ 					but not to os if match any of following cases:
+@@ -4120,6 +4144,8 @@
+ 					STA_TR_ENTRY *tr_entry = &tr_ctl->tr_entry[pSrcEntry->tr_tb_idx];
+ 
+ 					if (tr_entry && (tr_entry->PortSecured != WPA_802_1X_PORT_SECURED)) {
++						if (diag.active)
++							diag.source_blocked = 1;
+ 						MTWF_DBG(pAd, DBG_CAT_AP, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
+ 							"Not PortSecured Pkt FWD to STAs from wcid(%d)"
+ 							"to wcid(%d)!\n", pSrcEntry->wcid, pEntry->wcid);
+@@ -4138,6 +4164,8 @@
+ 				pEntry = &pAd->MacTab.Content[wcid];
+ 
+ 			if (pEntry && IS_ENTRY_CLIENT(pEntry)) {
++				if (diag.active)
++					diag.path = "a4-proxy";
+ 				to_os = FALSE;
+ 				to_air = TRUE;
+ 				dst_wdev = pEntry->wdev;
+@@ -4157,6 +4185,8 @@
+ 				&& (!MAC_ADDR_EQUAL(pEntryAddr, pHeader802_3 + 6))) {
+ 				pEntry = MacTableLookup(pAd, pEntryAddr);
+ 				if (pEntry && (pEntry->Sst == SST_ASSOC) && pEntry->wdev && (!pEntry->wdev->bVLAN_Tag)) {
++					if (diag.active)
++						diag.path = "client-wds";
+ 					to_os = FALSE;
+ 					to_air = TRUE;
+ 					dst_wdev = pEntry->wdev;
+@@ -4218,8 +4248,12 @@
+ #endif
+ 		pForwardPacket = DuplicatePacket(wdev->if_dev, pPacket);
+ 
+-		if (pForwardPacket == NULL)
++		if (pForwardPacket == NULL) {
++			if (diag.active)
++				diag.submit_status = -ENOMEM;
++			mt_roam_diag_packet(&diag, MT_ROAM_DIAG_FORWARD, to_os, to_air);
+ 			return to_os;
++		}
+ 
+ 		/* 1.1 apidx != 0, then we need set packet mbssid attribute. */
+ 		if (pEntry) {
+@@ -4232,6 +4266,11 @@
+ 			RTMP_SET_PACKET_WCID(pForwardPacket, wcid);
+ 		}
+ 
++		if (diag.active) {
++			diag.tx_wcid = wcid;
++			diag.tx_wdev = RTMP_GET_PACKET_WDEV(pForwardPacket);
++		}
++
+ 		RTMP_SET_PACKET_MOREDATA(pForwardPacket, FALSE);
+ #ifdef RT_CFG80211_P2P_SUPPORT
+ 		RTMP_SET_PACKET_OPMODE(pForwardPacket, OPMODE_AP);
+@@ -4245,10 +4284,18 @@
+ #endif
+ 		{
+ #ifndef A4_CONN
+-			send_data_pkt(pAd, wdev, pForwardPacket);
++			Ret = send_data_pkt(pAd, wdev, pForwardPacket);
++			if (diag.active) {
++				diag.submitted = 1;
++				diag.submit_status = Ret;
++			}
+ #else
+ 			RTMP_SET_PACKET_A4_FWDDATA(pForwardPacket, TRUE);
+ 			Ret = send_data_pkt(pAd, wdev, pForwardPacket);	/* rakesh: recheck */
++			if (diag.active) {
++				diag.submitted = 1;
++				diag.submit_status = Ret;
++			}
+ 
+ 			/* send bc/mc frame back to the same bss */
+ 			if ((pHeader802_3[0] & 0x01) && (Ret == NDIS_STATUS_SUCCESS)) {
+@@ -4258,6 +4305,7 @@
+ 		}
+ 	}
+ 
++	mt_roam_diag_packet(&diag, MT_ROAM_DIAG_FORWARD, to_os, to_air);
+ 	return to_os;
+ }
+ 
+--- a/mt_wifi/embedded/common/cmm_data.c
++++ b/mt_wifi/embedded/common/cmm_data.c
+@@ -25,6 +25,273 @@
+ 
+ 
+ #include "rt_config.h"
++
++#include <linux/etherdevice.h>
++#include <linux/moduleparam.h>
++#include <linux/ratelimit.h>
++#include "roam_diag_parse.h"
++
++/* Diagnostic only. No station state, forwarding decision or packet is changed. */
++static DEFINE_SPINLOCK(mt_roam_diag_lock);
++static unsigned char mt_roam_diag_macs[2][6];
++static unsigned int mt_roam_diag_count;
++static unsigned short roam_diag_port = 3773;
++/* Shared budgets count log records, not packets or actual deletions.
++ * One packet can emit three stages; one deletion can emit several events.
++ */
++static DEFINE_RATELIMIT_STATE(mt_roam_diag_packet_rate, HZ, 64);
++static DEFINE_RATELIMIT_STATE(mt_roam_diag_delete_rate, HZ, 16);
++static atomic64_t mt_roam_diag_seen[MT_ROAM_DIAG_STAGES] = {
++	ATOMIC64_INIT(0), ATOMIC64_INIT(0), ATOMIC64_INIT(0)
++};
++static atomic64_t mt_roam_diag_packet_logs = ATOMIC64_INIT(0);
++static atomic64_t mt_roam_diag_packet_drops = ATOMIC64_INIT(0);
++static atomic64_t mt_roam_diag_delete_seen = ATOMIC64_INIT(0);
++static atomic64_t mt_roam_diag_delete_logs = ATOMIC64_INIT(0);
++static atomic64_t mt_roam_diag_delete_drops = ATOMIC64_INIT(0);
++
++static int mt_roam_diag_set(const char *value, const struct kernel_param *kp)
++{
++	unsigned char macs[2][6] __aligned(2) = {{0}};
++	unsigned int count = 0, i;
++	unsigned long irq;
++	char text[40];
++	size_t len = strnlen(value, sizeof(text));
++
++	(void)kp;
++	if (len >= sizeof(text))
++		return -EINVAL;
++	memcpy(text, value, len + 1);
++	while (len && (text[len - 1] == '\n' || text[len - 1] == '\r'))
++		text[--len] = 0;
++	if (!strcmp(text, "off")) {
++		count = 0;
++	} else if (len == 17 || (len == 35 && text[17] == ',')) {
++		count = len == 17 ? 1 : 2;
++		for (i = 0; i < count; i++) {
++			const char *p = text + i * 18;
++
++			if (!mac_pton(p, macs[i]) || !is_valid_ether_addr(macs[i]))
++				return -EINVAL;
++		}
++	} else {
++		return -EINVAL;
++	}
++	spin_lock_irqsave(&mt_roam_diag_lock, irq);
++	memcpy(mt_roam_diag_macs, macs, sizeof(macs));
++	WRITE_ONCE(mt_roam_diag_count, count);
++	spin_unlock_irqrestore(&mt_roam_diag_lock, irq);
++	return 0;
++}
++
++static int mt_roam_diag_get(char *buffer, const struct kernel_param *kp)
++{
++	unsigned char macs[2][6];
++	unsigned long irq;
++	unsigned int count;
++
++	(void)kp;
++	spin_lock_irqsave(&mt_roam_diag_lock, irq);
++	count = mt_roam_diag_count;
++	memcpy(macs, mt_roam_diag_macs, sizeof(macs));
++	spin_unlock_irqrestore(&mt_roam_diag_lock, irq);
++	if (!count)
++		return scnprintf(buffer, PAGE_SIZE, "off\n");
++	if (count == 1)
++		return scnprintf(buffer, PAGE_SIZE, "%pM\n", macs[0]);
++	return scnprintf(buffer, PAGE_SIZE, "%pM,%pM\n", macs[0], macs[1]);
++}
++
++static const struct kernel_param_ops mt_roam_diag_ops = {
++	.set = mt_roam_diag_set,
++	.get = mt_roam_diag_get,
++};
++module_param_cb(roam_diag_mac, &mt_roam_diag_ops, NULL, 0600);
++MODULE_PARM_DESC(roam_diag_mac, "off (default), or one/two comma-separated unicast MACs");
++module_param_named(roam_diag_port, roam_diag_port, ushort, 0600);
++MODULE_PARM_DESC(roam_diag_port, "Target TCP port for SYN/RST diagnostics (default 3773)");
++
++static int mt_roam_diag_match(const unsigned char *mac)
++{
++	unsigned int i, count;
++	unsigned long irq;
++	int matched = 0;
++
++	if (!mac || !READ_ONCE(mt_roam_diag_count))
++		return 0;
++	spin_lock_irqsave(&mt_roam_diag_lock, irq);
++	count = mt_roam_diag_count;
++	for (i = 0; i < count; i++)
++		if (!memcmp(mac, mt_roam_diag_macs[i], 6)) {
++			matched = 1;
++			break;
++		}
++	spin_unlock_irqrestore(&mt_roam_diag_lock, irq);
++	return matched;
++}
++
++static int mt_roam_diag_read(void *context, unsigned int offset,
++			    void *buffer, unsigned int length)
++{
++	return skb_copy_bits(context, offset, buffer, length);
++}
++
++
++/* Counters count matching records since module load, not unique packets/STAs.
++ * Reads across counters are not an atomic snapshot. Suppression is not path absence.
++ */
++static int mt_roam_diag_stats_get(char *buffer, const struct kernel_param *kp)
++{
++	(void)kp;
++	return scnprintf(buffer, PAGE_SIZE,
++		"rx_before=%lld fwd_result=%lld rx_after=%lld "
++		"packet_logs=%lld packet_suppressed=%lld "
++		"delete_seen=%lld delete_logs=%lld delete_suppressed=%lld\n",
++		(long long)atomic64_read(&mt_roam_diag_seen[MT_ROAM_DIAG_RX_BEFORE]),
++		(long long)atomic64_read(&mt_roam_diag_seen[MT_ROAM_DIAG_FORWARD]),
++		(long long)atomic64_read(&mt_roam_diag_seen[MT_ROAM_DIAG_RX_AFTER]),
++		(long long)atomic64_read(&mt_roam_diag_packet_logs),
++		(long long)atomic64_read(&mt_roam_diag_packet_drops),
++		(long long)atomic64_read(&mt_roam_diag_delete_seen),
++		(long long)atomic64_read(&mt_roam_diag_delete_logs),
++		(long long)atomic64_read(&mt_roam_diag_delete_drops));
++}
++static int mt_roam_diag_stats_set(const char *value, const struct kernel_param *kp)
++{
++	(void)value;
++	(void)kp;
++	return -EPERM;
++}
++static const struct kernel_param_ops mt_roam_diag_stats_ops = {
++	.set = mt_roam_diag_stats_set,
++	.get = mt_roam_diag_stats_get,
++};
++module_param_cb(roam_diag_stats, &mt_roam_diag_stats_ops, NULL, 0400);
++MODULE_PARM_DESC(roam_diag_stats, "Read-only matched and suppressed diagnostic counters");
++
++VOID mt_roam_diag_init(struct mt_roam_diag_ctx *ctx,
++	struct wifi_dev *wdev, PNDIS_PACKET packet)
++{
++	struct sk_buff *skb = RTPKT_TO_OSPKT(packet);
++	struct mt_roam_diag_frame frame;
++	struct net_device *ndev;
++	unsigned char eth[14];
++
++	ctx->active = 0;
++	if (!READ_ONCE(mt_roam_diag_count) || !skb || !wdev ||
++	    skb_copy_bits(skb, 0, eth, sizeof(eth)) ||
++	    (!mt_roam_diag_match(eth) && !mt_roam_diag_match(eth + 6)) ||
++	    !mt_roam_diag_decode(skb, skb->len, mt_roam_diag_read,
++				 READ_ONCE(roam_diag_port), &frame))
++		return;
++	*ctx = (struct mt_roam_diag_ctx) {
++		.active = 1, .frame = frame, .path = "not-looked-up",
++		.in_wdev = wdev->wdev_idx, .iif = skb->skb_iif,
++		.lookup_hit = -1, .lookup_slot = -1, .lookup_sst = -1,
++		.dst_wdev_slot = -1, .same_wdev = -1,
++		.tx_wcid = -1, .tx_wdev = -1, .submit_status = -1,
++	};
++	memcpy(ctx->bssid, wdev->bssid, sizeof(ctx->bssid));
++	ndev = READ_ONCE(wdev->if_dev);
++	if (ndev)
++		strscpy(ctx->ifname, ndev->name, sizeof(ctx->ifname));
++}
++
++/* Compare owned table slots; never dereference a destination wdev/entry. */
++INT mt_roam_diag_wdev_slot(RTMP_ADAPTER *ad, const struct wifi_dev *wdev)
++{
++	unsigned int i;
++
++	if (!wdev)
++		return -1;
++	for (i = 0; i < ARRAY_SIZE(ad->wdev_list); i++)
++		if (READ_ONCE(ad->wdev_list[i]) == wdev)
++			return i;
++	return -1;
++}
++
++INT mt_roam_diag_entry_slot(RTMP_ADAPTER *ad, const MAC_TABLE_ENTRY *entry)
++{
++	unsigned int i;
++
++	if (!entry)
++		return -1;
++	for (i = 0; i < ARRAY_SIZE(ad->MacTab.Content); i++)
++		if (&ad->MacTab.Content[i] == entry)
++			return i;
++	return -1;
++}
++
++VOID mt_roam_diag_packet(const struct mt_roam_diag_ctx *ctx,
++	enum mt_roam_diag_stage stage, int to_os, int to_air)
++{
++	static const char * const names[] = {
++		"rx-before-fwd", "fwd-result", "rx-after-fwd"
++	};
++	const struct mt_roam_diag_frame *f;
++
++	if (!ctx->active || !READ_ONCE(mt_roam_diag_count) ||
++	    stage < 0 || stage >= MT_ROAM_DIAG_STAGES)
++		return;
++	atomic64_inc(&mt_roam_diag_seen[stage]);
++	if (!__ratelimit(&mt_roam_diag_packet_rate)) {
++		atomic64_inc(&mt_roam_diag_packet_drops);
++		return;
++	}
++	atomic64_inc(&mt_roam_diag_packet_logs);
++	f = &ctx->frame;
++	/* Only captured values: no post-decision entry/wdev/skb reads here. */
++	pr_info("ROAMDIAG stage=%s path=%s if=%s in_wdev=%d bssid=%pM iif=%d "
++		"src=%pM dst=%pM ip=%pI4:%u>%pI4:%u flags=%02x seq=%u ack=%u "
++		"lookup_hit=%d lookup_slot=%d sst_test=%d dst_wdev_slot=%d "
++		"same_wdev=%d source_blocked=%d tx_wcid=%d tx_wdev=%d "
++		"to_os=%d to_air=%d submitted=%d submit_rc=%d\n",
++		names[stage], ctx->path, ctx->ifname, ctx->in_wdev,
++		ctx->bssid, ctx->iif, f->src, f->dst,
++		f->sip, (unsigned int)f->sport, f->dip, (unsigned int)f->dport,
++		(unsigned int)f->flags, f->seq, f->ack,
++		ctx->lookup_hit, ctx->lookup_slot, ctx->lookup_sst,
++		ctx->dst_wdev_slot, ctx->same_wdev, ctx->source_blocked,
++		ctx->tx_wcid, ctx->tx_wdev, to_os, to_air,
++		ctx->submitted, ctx->submit_status);
++}
++
++VOID mt_roam_diag_delete(RTMP_ADAPTER *ad, MAC_TABLE_ENTRY *entry,
++	const UCHAR *requested, unsigned int requested_wcid,
++	const char *stage, int reason, const void *caller)
++{
++	unsigned char current[6], requested_copy[6];
++	struct wifi_dev *wdev;
++	unsigned int twt = 0;
++
++	if (!READ_ONCE(mt_roam_diag_count) || !entry)
++		return;
++	memcpy(current, entry->Addr, sizeof(current));
++	memcpy(requested_copy, requested ? requested : current, sizeof(requested_copy));
++	if (!mt_roam_diag_match(current) && !mt_roam_diag_match(requested_copy))
++		return;
++	atomic64_inc(&mt_roam_diag_delete_seen);
++	if (!__ratelimit(&mt_roam_diag_delete_rate)) {
++		atomic64_inc(&mt_roam_diag_delete_drops);
++		return;
++	}
++	atomic64_inc(&mt_roam_diag_delete_logs);
++	wdev = READ_ONCE(entry->wdev);
++#if defined(DOT11_HE_AX) && defined(WIFI_TWT_SUPPORT)
++	twt = READ_ONCE(entry->twt_flow_id_bitmap);
++#endif
++	/* These counters are observations, not an atomic station-identity claim. */
++	pr_info("ROAMDIAG stage=%s mac_obs=%pM requested=%pM requested_wcid=%u "
++		"entry_wcid_obs=%u wdev_slot_obs=%d sst_obs=%d idle_obs=%lu "
++		"timeout_obs=%u ps_obs=%u twt_obs=%u tx_fail_obs=%u "
++		"reason=%d caller=%pS\n",
++		stage, current, requested_copy, requested_wcid,
++		(unsigned int)READ_ONCE(entry->wcid), mt_roam_diag_wdev_slot(ad, wdev),
++		(int)READ_ONCE(entry->Sst), (unsigned long)READ_ONCE(entry->NoDataIdleCount),
++		(unsigned int)READ_ONCE(entry->StaIdleTimeout),
++		(unsigned int)READ_ONCE(entry->PsMode), twt,
++		(unsigned int)READ_ONCE(entry->ContinueTxFailCnt), reason, caller);
++}
+ #ifdef TXRX_STAT_SUPPORT
+ #include "hdev/hdev_basic.h"
+ #endif
+@@ -3518,6 +3785,7 @@
+ 	struct wifi_dev *wdev,
+ 	UCHAR op_mode)
+ {
++	struct mt_roam_diag_ctx diag;
+ 	BOOLEAN to_os = FALSE;
+ 	struct wifi_dev_ops *ops = NULL;
+ 	struct tr_counter *tr_cnt = &pAd->tr_ctl.tr_cnt;
+@@ -3605,8 +3873,11 @@
+ 	}
+ #endif /*VLAN_SUPPORT*/
+ 
++	mt_roam_diag_init(&diag, wdev, pPacket);
++	mt_roam_diag_packet(&diag, MT_ROAM_DIAG_RX_BEFORE, -1, -1);
+ 	if (ops->rx_pkt_foward)
+ 		to_os = ops->rx_pkt_foward(pAd, wdev, pPacket);
++	mt_roam_diag_packet(&diag, MT_ROAM_DIAG_RX_AFTER, to_os, -1);
+ 
+ 	if (to_os == TRUE) {
+ #if defined(CONFIG_WIFI_PKT_FWD) || defined(CONFIG_WIFI_PKT_FWD_MODULE)
+--- a/mt_wifi/embedded/fsm/ap_mgmt_assoc.c
++++ b/mt_wifi/embedded/fsm/ap_mgmt_assoc.c
+@@ -3687,6 +3687,8 @@
+ 		pPmfCfg = &pEntry->SecConfig.PmfCfg;
+ 
+ 		if (pPmfCfg->UsePMFConnect == TRUE && Fr->Hdr.FC.Wep == 0) {
++			mt_roam_diag_delete(pAd, pEntry, Addr2, Elem->Wcid,
++				"peer-disassoc-reject-pmf", Reason, OS_TRACE);
+ 			MTWF_DBG(pAd, DBG_CAT_SEC, CATSEC_PMF, DBG_LVL_INFO, "drop due to unprotect disassoc frame\n");
+ 			return;
+ 		}
+@@ -3701,6 +3703,8 @@
+ 			@2016/1/26
+ 		*/
+ 		if (!MAC_ADDR_EQUAL(wdev->if_addr, Addr1)) {
++			mt_roam_diag_delete(pAd, pEntry, Addr2, Elem->Wcid,
++				"peer-disassoc-reject-bssid", Reason, OS_TRACE);
+ 			MTWF_DBG(pAd, DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
+ 					 "ASSOC - The DA of this DIS-ASSOC request is "MACSTR", ignore.\n",
+ 					  MAC2STR(Addr1));
+@@ -3738,6 +3742,8 @@
+ 		/*	// TODO: if the port secured is not true, then send failed assoc.*/
+ #endif
+ 		}
++		mt_roam_diag_delete(pAd, pEntry, Addr2, Elem->Wcid,
++			"peer-disassoc-accept", Reason, OS_TRACE);
+ 		MacTableDeleteEntry(pAd, Elem->Wcid, Addr2);
+ 
+ #if defined(CONFIG_MAP_SUPPORT) && defined(WAPP_SUPPORT)
+--- a/mt_wifi/embedded/fsm/ap_mgmt_auth.c
++++ b/mt_wifi/embedded/fsm/ap_mgmt_auth.c
+@@ -369,6 +369,8 @@
+ 			pPmfCfg = &pEntry->SecConfig.PmfCfg;
+ 
+ 			if (pPmfCfg->UsePMFConnect == TRUE && Fr->Hdr.FC.Wep == 0) {
++				mt_roam_diag_delete(pAd, pEntry, Addr2, Elem->Wcid,
++					"peer-deauth-reject-pmf", Reason, OS_TRACE);
+ 				MTWF_DBG(pAd, DBG_CAT_SEC, CATSEC_PMF, DBG_LVL_WARN, "drop due to unprotect deauth frame\n");
+ 				return;
+ 			}
+@@ -380,6 +382,8 @@
+ 			}
+ 
+ 			if (memcmp(&Fr->Hdr.Addr1, pMbss->wdev.bssid, 6) != 0) {
++				mt_roam_diag_delete(pAd, pEntry, Addr2, Elem->Wcid,
++					"peer-deauth-reject-bssid", Reason, OS_TRACE);
+ 				MTWF_DBG(pAd, DBG_CAT_AP, DBG_SUBCAT_ALL, DBG_LVL_WARN,
+ 						 "da not match bssid,bssid:0x%02x%02x%02x%02x%02x%02x, addr1:0x%02x%02x%02x%02x%02x%02x\n",
+ 						  *tmp, *(tmp + 1), *(tmp + 2), *(tmp + 3), *(tmp + 4), *(tmp + 5), *tmp2, *(tmp2 + 1), *(tmp2 + 2), *(tmp2 + 3), *(tmp2 + 4), *(tmp2 + 5));
+@@ -429,6 +433,8 @@
+ 			if (IS_MAP_ENABLE(pAd) && IS_MAP_R2_ENABLE(pAd))
+ 				pEntry->DisconnectReason = Reason;
+ #endif
++			mt_roam_diag_delete(pAd, pEntry, Addr2, Elem->Wcid,
++				"peer-deauth-accept", Reason, OS_TRACE);
+ 			MacTableDeleteEntry(pAd, Elem->Wcid, Addr2);
+ 		}
+ 
+--- /dev/null
++++ b/mt_wifi/embedded/include/roam_diag.h
+@@ -0,0 +1,35 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++#ifndef MT_ROAM_DIAG_H
++#define MT_ROAM_DIAG_H
++#include "roam_diag_parse.h"
++
++enum mt_roam_diag_stage {
++	MT_ROAM_DIAG_RX_BEFORE,
++	MT_ROAM_DIAG_FORWARD,
++	MT_ROAM_DIAG_RX_AFTER,
++	MT_ROAM_DIAG_STAGES
++};
++
++/* Values only. Never retain an entry/wdev/skb pointer across submission. */
++struct mt_roam_diag_ctx {
++	unsigned int active;
++	struct mt_roam_diag_frame frame;
++	char ifname[16];
++	UCHAR bssid[6];
++	int in_wdev, iif;
++	int lookup_hit, lookup_slot, lookup_sst;
++	int dst_wdev_slot, same_wdev, source_blocked;
++	int tx_wcid, tx_wdev, submitted, submit_status;
++	const char *path;
++};
++
++VOID mt_roam_diag_init(struct mt_roam_diag_ctx *ctx,
++	struct wifi_dev *wdev, PNDIS_PACKET packet);
++INT mt_roam_diag_wdev_slot(RTMP_ADAPTER *ad, const struct wifi_dev *wdev);
++INT mt_roam_diag_entry_slot(RTMP_ADAPTER *ad, const MAC_TABLE_ENTRY *entry);
++VOID mt_roam_diag_packet(const struct mt_roam_diag_ctx *ctx,
++	enum mt_roam_diag_stage stage, int to_os, int to_air);
++VOID mt_roam_diag_delete(RTMP_ADAPTER *ad, MAC_TABLE_ENTRY *entry,
++	const UCHAR *requested, unsigned int requested_wcid,
++	const char *stage, int reason, const void *caller);
++#endif
+--- /dev/null
++++ b/mt_wifi/embedded/include/roam_diag_parse.h
+@@ -0,0 +1,67 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/* Fixed headers only: never copy TCP options or application payload. */
++#ifndef MT_ROAM_DIAG_PARSE_H
++#define MT_ROAM_DIAG_PARSE_H
++
++struct mt_roam_diag_frame {
++	unsigned char src[6], dst[6], sip[4], dip[4], flags;
++	unsigned short sport, dport;
++	unsigned int seq, ack;
++};
++
++static inline unsigned short mt_roam_diag_be16(const unsigned char *p)
++{
++	return ((unsigned short)p[0] << 8) | p[1];
++}
++
++static inline unsigned int mt_roam_diag_be32(const unsigned char *p)
++{
++	return ((unsigned int)p[0] << 24) | ((unsigned int)p[1] << 16) |
++	       ((unsigned int)p[2] << 8) | p[3];
++}
++
++/* read() follows skb_copy_bits(): zero on success, nonzero on short input. */
++static inline int mt_roam_diag_decode(void *context, unsigned int length,
++	int (*read)(void *, unsigned int, void *, unsigned int),
++	unsigned short port, struct mt_roam_diag_frame *frame)
++{
++	unsigned char eth[14], ip[20], tcp[20];
++	unsigned int ihl, i;
++
++	if (length < 54 || read(context, 0, eth, sizeof(eth)))
++		return 0;
++	/* This diagnostic intentionally covers untagged IPv4 only. */
++	if (mt_roam_diag_be16(eth + 12) != 0x0800 ||
++	    read(context, 14, ip, sizeof(ip)))
++		return 0;
++	ihl = (ip[0] & 15) * 4;
++	if ((ip[0] >> 4) != 4 || ihl < 20 || ip[9] != 6 ||
++	    (mt_roam_diag_be16(ip + 6) & 0x3fff) ||
++	    mt_roam_diag_be16(ip + 2) < ihl + 20 ||
++	    length < 14 + ihl + 20 ||
++	    read(context, 14 + ihl, tcp, sizeof(tcp)))
++		return 0;
++	if ((tcp[12] >> 4) < 5 ||
++	    mt_roam_diag_be16(ip + 2) < ihl + (unsigned int)(tcp[12] >> 4) * 4 ||
++	    length < 14 + ihl + (unsigned int)(tcp[12] >> 4) * 4 ||
++	    !(tcp[13] & 0x06) ||
++	    (mt_roam_diag_be16(tcp) != port &&
++	     mt_roam_diag_be16(tcp + 2) != port))
++		return 0;
++
++	for (i = 0; i < 6; i++) {
++		frame->dst[i] = eth[i];
++		frame->src[i] = eth[i + 6];
++	}
++	for (i = 0; i < 4; i++) {
++		frame->sip[i] = ip[12 + i];
++		frame->dip[i] = ip[16 + i];
++	}
++	frame->sport = mt_roam_diag_be16(tcp);
++	frame->dport = mt_roam_diag_be16(tcp + 2);
++	frame->seq = mt_roam_diag_be32(tcp + 4);
++	frame->ack = mt_roam_diag_be32(tcp + 8);
++	frame->flags = tcp[13];
++	return 1;
++}
++#endif
+--- a/mt_wifi/embedded/include/rtmp.h
++++ b/mt_wifi/embedded/include/rtmp.h
+@@ -14888,6 +14888,9 @@
+ VOID mac_entry_lookup(RTMP_ADAPTER *pAd, UCHAR *pAddr, struct wifi_dev *wdev, MAC_TABLE_ENTRY **entry);
+ VOID mac_entry_delete(struct _RTMP_ADAPTER	*ad, struct _MAC_TABLE_ENTRY *entry);
+ 
++#include "roam_diag.h"
++
++
+ INT32 MtAcquirePowerControl(RTMP_ADAPTER *pAd, UINT32 Offset);
+ void MtReleasePowerControl(RTMP_ADAPTER *pAd, UINT32 Offset);
+ 
+--- a/mt_wifi/embedded/mgmt/mgmt_entrytb.c
++++ b/mt_wifi/embedded/mgmt/mgmt_entrytb.c
+@@ -1874,6 +1874,10 @@
+ 	if (!pAd)
+ 		return FALSE;
+ 
++	if (VALID_UCAST_ENTRY_WCID(pAd, wcid))
++		mt_roam_diag_delete(pAd, &pAd->MacTab.Content[wcid], pAddr, wcid,
++			"delete-entry-request", -1, OS_TRACE);
++
+ #ifdef WTBL_TDD_SUPPORT
+ 	if (IS_WTBL_TDD_ENABLED(pAd)) {
+ 		if (WtblTdd_Entry_DeInit(pAd, wcid, pAddr) == SW_TABLE)
+@@ -2766,6 +2770,8 @@
+ 
+ 	*((UINT16 *)buf) = entry->wcid;
+ 	memcpy(&buf[2], entry->Addr, 6);
++	mt_roam_diag_delete(ad, entry, &buf[2], *((UINT16 *)buf),
++		"delete-enqueue", -1, OS_TRACE);
+ 	RTEnqueueInternalCmd(ad, CMDTHRED_MAC_TABLE_DEL, (VOID *) buf, sizeof(buf));
+ }
+ 
+--- a/mt_wifi/embedded/security/cmm_wpa.c
++++ b/mt_wifi/embedded/security/cmm_wpa.c
+@@ -1391,6 +1391,8 @@
+ #ifdef CONFIG_STA_SUPPORT
+ 		PSTA_ADMIN_CONFIG pStaCfg = GetStaCfgByWdev(pAd, pEntry->wdev);
+ #endif
++		mt_roam_diag_delete(pAd, pEntry, pEntry->Addr, pEntry->wcid,
++			"local-deauth-request", Reason, OS_TRACE);
+ 		/* Send out a Deauthentication request frame*/
+ 		NStatus = MlmeAllocateMemory(pAd, &pOutBuffer);
+ 
