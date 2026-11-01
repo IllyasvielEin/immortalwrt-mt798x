@@ -1,6 +1,9 @@
 name: Build Redmi AX6000 firmware
 
 on:
+  push:
+    tags:
+      - 'ax6000-*-roam-diag'
   workflow_dispatch:
     inputs:
       sync_upstream:
@@ -35,7 +38,7 @@ jobs:
           fetch-depth: 0
 
       - name: Merge latest upstream source
-        if: ${{ inputs.sync_upstream }}
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.sync_upstream }}
         shell: bash
         run: |
           set -euo pipefail
@@ -91,6 +94,10 @@ jobs:
             ax6000-ccache-${{ runner.os }}-${{ hashFiles('defconfig/mt7986-ax6000.config') }}-
             ax6000-ccache-${{ runner.os }}-
 
+      - name: Pin Build17 feeds for diagnostic comparison
+        if: ${{ github.event_name == 'push' }}
+        run: cp defconfig/mt7986-ax6000-build17.feeds feeds.conf
+
       - name: Update and install feeds
         shell: bash
         run: |
@@ -136,7 +143,13 @@ jobs:
           for symbol in \
             RRM_ReadParametersFromFile \
             WNM_ReadParametersFromFile \
-            FT_rtmp_read_parameters_from_file
+            FT_rtmp_read_parameters_from_file \
+            mt_roam_diag_init \
+            mt_roam_diag_packet \
+            mt_roam_diag_delete \
+            __param_roam_diag_mac \
+            __param_roam_diag_port \
+            __param_roam_diag_stats
           do
             grep -qw "$symbol" mt-wifi.symbols
           done
@@ -160,10 +173,18 @@ jobs:
 
           cp .config "$TARGET_DIR/ax6000.config"
           cp ax6000.diffconfig "$TARGET_DIR/ax6000.diffconfig"
+          cp package/mtk/drivers/mt_wifi/patches-7673/043-roaming-path-diagnostics.patch "$TARGET_DIR/"
+          if [ -f feeds.conf ]; then
+            cp feeds.conf "$TARGET_DIR/feeds.conf"
+          else
+            cp feeds.conf.default "$TARGET_DIR/feeds.conf"
+          fi
           {
             echo "repository=${GITHUB_REPOSITORY}"
             echo "workflow_commit=$(git rev-parse HEAD)"
             echo "source_tree=$(git rev-parse 'HEAD^{tree}')"
+            echo "roam_diag_default=off"
+            echo "roam_diag_patch_sha256=$(sha256sum package/mtk/drivers/mt_wifi/patches-7673/043-roaming-path-diagnostics.patch | cut -d ' ' -f 1)"
             echo "upstream_25_12=$(git rev-parse upstream/25.12 2>/dev/null || echo not-fetched)"
             echo "build_time=$(date --utc --iso-8601=seconds)"
             echo "clang=$(clang --version | head -n1)"
@@ -174,7 +195,7 @@ jobs:
             done
           } > "$TARGET_DIR/build-metadata.txt"
 
-          sha256sum "$factory" "$sysupgrade" > "$TARGET_DIR/ax6000-images.sha256"
+          (cd "$TARGET_DIR"; sha256sum "$(basename "$factory")" "$(basename "$sysupgrade")") > "$TARGET_DIR/ax6000-images.sha256"
           du -h "$factory" "$sysupgrade"
           cat "$TARGET_DIR/build-metadata.txt"
 
@@ -190,6 +211,8 @@ jobs:
             ${{ env.TARGET_DIR }}/ax6000.diffconfig
             ${{ env.TARGET_DIR }}/ax6000-images.sha256
             ${{ env.TARGET_DIR }}/build-metadata.txt
+            ${{ env.TARGET_DIR }}/043-roaming-path-diagnostics.patch
+            ${{ env.TARGET_DIR }}/feeds.conf
             ${{ env.TARGET_DIR }}/config.buildinfo
             ${{ env.TARGET_DIR }}/feeds.buildinfo
             ${{ env.TARGET_DIR }}/profiles.json
@@ -207,3 +230,66 @@ jobs:
             build.log
             download.log
             logs
+
+
+  publish-diagnostics:
+    name: Publish diagnostic prerelease
+    needs: build
+    if: ${{ github.event_name == 'push' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download verified firmware
+        uses: actions/download-artifact@v4
+        with:
+          name: redmi-ax6000-mtkuboot-${{ github.run_number }}
+          path: firmware
+
+      - name: Publish diagnostic release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          images=(firmware/*ax6000-mtkuboot*squashfs-sysupgrade.bin)
+          test "${#images[@]}" -eq 1
+          assets=(
+            "${images[0]}"
+            firmware/ax6000.config
+            firmware/ax6000.diffconfig
+            firmware/build-metadata.txt
+            firmware/feeds.conf
+            firmware/feeds.buildinfo
+            firmware/version.buildinfo
+            firmware/043-roaming-path-diagnostics.patch
+          )
+          for asset in "${assets[@]}"; do test -s "$asset"; done
+          (cd firmware; sha256sum "${assets[@]#firmware/}") > firmware/ax6000-roam-diag.sha256
+          image_hash="$(sha256sum "${images[0]}")"
+          image_hash="${image_hash%% *}"
+          {
+            echo 'Redmi AX6000 / MTK U-Boot 110M 漫游诊断固件。仅上传 sysupgrade 镜像。'
+            echo
+            echo '基于 Build17 源码及其六个 feeds 的已公布修订，加入默认关闭的 043 诊断补丁。'
+            echo '本版用于确认旧 STA 直转路径及原始删除原因，尚不是永久修复；不修改老化、隔离或加速策略。'
+            echo
+            printf '源码：%s\n\n' "$GITHUB_SHA"
+            printf '构建日志：https://github.com/%s/actions/runs/%s\n\n' "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
+            printf '镜像：%s\n\nSHA-256：%s\n\n' "${images[0]##*/}" "$image_hash"
+            echo '配置、MTK 模块符号、镜像大小及 SHA-256 已由 CI 检查；未进行真机刷写或运行验证。'
+            echo
+            echo '诊断参数位于 /sys/module/mt_wifi/parameters/：'
+            echo '- roam_diag_mac：默认 off；可指定一个或两个逗号分隔的单播 MAC。'
+            echo '- roam_diag_port：默认 3773；包日志仅覆盖未打 VLAN 标签的 IPv4 TCP SYN/RST 固定头部。'
+            echo '- roam_diag_stats：只读累计统计。'
+            echo
+            echo '限速按日志记录计费：每个 HZ 窗口共享 64 条包阶段记录、16 条管理/删除记录；不是包数或实际删除次数。'
+            echo '计数自模块加载累计，跨计数读取不是一致快照；没有日志不能单独证明没有经过某条路径。'
+          } > release-notes.md
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --verify-tag --prerelease --draft \
+            --title "Redmi AX6000 · $GITHUB_REF_NAME" --notes-file release-notes.md \
+            "${assets[@]}" firmware/ax6000-roam-diag.sha256
+          gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false
