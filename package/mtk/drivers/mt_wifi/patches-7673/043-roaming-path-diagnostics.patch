@@ -451,15 +451,15 @@ Management/deletion scope: selected MACs, metadata and reason codes only.
 +	const UCHAR *requested, unsigned int requested_wcid,
 +	const char *stage, int reason, const void *caller)
 +{
-+	unsigned char current[6], requested_copy[6];
++	unsigned char observed_mac[6], requested_copy[6];
 +	struct wifi_dev *wdev;
 +	unsigned int twt = 0;
 +
 +	if (!READ_ONCE(mt_roam_diag_count) || !entry)
 +		return;
-+	memcpy(current, entry->Addr, sizeof(current));
-+	memcpy(requested_copy, requested ? requested : current, sizeof(requested_copy));
-+	if (!mt_roam_diag_match(current) && !mt_roam_diag_match(requested_copy))
++	memcpy(observed_mac, entry->Addr, sizeof(observed_mac));
++	memcpy(requested_copy, requested ? requested : observed_mac, sizeof(requested_copy));
++	if (!mt_roam_diag_match(observed_mac) && !mt_roam_diag_match(requested_copy))
 +		return;
 +	atomic64_inc(&mt_roam_diag_delete_seen);
 +	if (!__ratelimit(&mt_roam_diag_delete_rate)) {
@@ -476,7 +476,7 @@ Management/deletion scope: selected MACs, metadata and reason codes only.
 +		"entry_wcid_obs=%u wdev_slot_obs=%d sst_obs=%d idle_obs=%lu "
 +		"timeout_obs=%u ps_obs=%u twt_obs=%u tx_fail_obs=%u "
 +		"reason=%d caller=%pS\n",
-+		stage, current, requested_copy, requested_wcid,
++		stage, observed_mac, requested_copy, requested_wcid,
 +		(unsigned int)READ_ONCE(entry->wcid), mt_roam_diag_wdev_slot(ad, wdev),
 +		(int)READ_ONCE(entry->Sst), (unsigned long)READ_ONCE(entry->NoDataIdleCount),
 +		(unsigned int)READ_ONCE(entry->StaIdleTimeout),
