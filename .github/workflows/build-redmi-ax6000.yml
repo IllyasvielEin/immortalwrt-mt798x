@@ -2,6 +2,12 @@ name: Build Redmi AX6000 firmware
 
 on:
   workflow_dispatch:
+    inputs:
+      cold_cache:
+        description: 'Fresh runner without restoring or saving download/compiler caches'
+        type: boolean
+        required: true
+        default: false
 
 permissions:
   contents: read
@@ -14,6 +20,8 @@ env:
   CONFIG_FILE: defconfig/mt7986-ax6000.config
   TARGET_DIR: bin/targets/mediatek/filogic
   CCACHE_MAXSIZE: 3G
+  CCACHE_COMPILERCHECK: content
+  AX6000_GO_BOOTSTRAP_MODE: source
   TZ: Asia/Singapore
 
 jobs:
@@ -35,6 +43,16 @@ jobs:
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           python3 scripts/check-ax6000-production.py
           python3 -m unittest discover -s tests -p 'test_ax6000_*.py' -v
+
+      - name: Record source time and cache inputs
+        id: cache_inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)" >> "$GITHUB_ENV"
+          python3 scripts/ax6000-ci-cache.py inputs \
+            --bootstrap-mode "$AX6000_GO_BOOTSTRAP_MODE" \
+            --output ax6000-cache-inputs.json
 
       - name: Reclaim runner disk space
         shell: bash
@@ -62,23 +80,60 @@ jobs:
           clang --version
           for tool in llc llvm-dis llvm-nm opt llvm-strip; do command -v "$tool"; done
 
-      - name: Restore download cache
-        uses: actions/cache@v4
+      - name: Look up source downloads
+        id: downloads_lookup
+        if: ${{ !inputs.cold_cache }}
+        continue-on-error: true
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
           path: dl
-          key: ax6000-dl-${{ runner.os }}-${{ hashFiles('feeds.conf.default', 'defconfig/mt7986-ax6000.config') }}-${{ github.run_id }}
-          restore-keys: |
-            ax6000-dl-${{ runner.os }}-${{ hashFiles('feeds.conf.default', 'defconfig/mt7986-ax6000.config') }}-
-            ax6000-dl-${{ runner.os }}-
+          lookup-only: true
+          key: ${{ steps.cache_inputs.outputs.downloads_key }}
+          restore-keys: ${{ steps.cache_inputs.outputs.downloads_restore }}
 
-      - name: Restore compiler cache
-        uses: actions/cache@v4
+      - name: Restore source downloads
+        id: downloads_cache
+        if: ${{ !inputs.cold_cache && steps.downloads_lookup.outputs.cache-matched-key != '' }}
+        continue-on-error: true
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: dl
+          key: ${{ steps.downloads_lookup.outputs.cache-matched-key }}
+
+      - name: Look up compiler objects
+        id: compiler_lookup
+        if: ${{ !inputs.cold_cache }}
+        continue-on-error: true
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
           path: .ccache
-          key: ax6000-ccache-${{ runner.os }}-${{ hashFiles('defconfig/mt7986-ax6000.config') }}-${{ github.run_id }}
-          restore-keys: |
-            ax6000-ccache-${{ runner.os }}-${{ hashFiles('defconfig/mt7986-ax6000.config') }}-
-            ax6000-ccache-${{ runner.os }}-
+          lookup-only: true
+          key: ${{ steps.cache_inputs.outputs.compiler_key }}
+          restore-keys: ${{ steps.cache_inputs.outputs.compiler_restore }}
+
+      - name: Restore compiler objects
+        id: compiler_cache
+        if: ${{ !inputs.cold_cache && steps.compiler_lookup.outputs.cache-matched-key != '' }}
+        continue-on-error: true
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: .ccache
+          key: ${{ steps.compiler_lookup.outputs.cache-matched-key }}
+
+      - name: Validate cache restores or select cold mode
+        id: cache_state
+        shell: bash
+        env:
+          AX6000_COLD_CACHE: ${{ inputs.cold_cache }}
+          AX6000_DOWNLOADS_LOOKUP_OUTCOME: ${{ steps.downloads_lookup.outcome }}
+          AX6000_DOWNLOADS_EXPECTED_KEY: ${{ steps.downloads_lookup.outputs.cache-matched-key }}
+          AX6000_DOWNLOADS_RESTORE_OUTCOME: ${{ steps.downloads_cache.outcome }}
+          AX6000_DOWNLOADS_RESTORED_KEY: ${{ steps.downloads_cache.outputs.cache-matched-key }}
+          AX6000_COMPILER_LOOKUP_OUTCOME: ${{ steps.compiler_lookup.outcome }}
+          AX6000_COMPILER_EXPECTED_KEY: ${{ steps.compiler_lookup.outputs.cache-matched-key }}
+          AX6000_COMPILER_RESTORE_OUTCOME: ${{ steps.compiler_cache.outcome }}
+          AX6000_COMPILER_RESTORED_KEY: ${{ steps.compiler_cache.outputs.cache-matched-key }}
+        run: python3 scripts/ax6000-ci-cache.py prepare --output ax6000-cache-state.json
 
       - name: Update and install feeds
         shell: bash
@@ -104,7 +159,12 @@ jobs:
             exit 1
           fi
 
+      - name: Record verified build inputs
+        id: build_inputs
+        run: python3 scripts/ax6000-build-inputs.py prepare --output-dir ax6000-build-inputs
+
       - name: Download sources
+        id: downloads
         shell: bash
         run: |
           set -o pipefail
@@ -112,13 +172,30 @@ jobs:
             make -j1 V=s download 2>&1 | tee -a download.log
           fi
 
+      - name: Initialize optional build observations
+        continue-on-error: true
+        env:
+          AX6000_COLD_CACHE: ${{ inputs.cold_cache }}
+          AX6000_DOWNLOADS_MATCHED_KEY: ${{ steps.downloads_cache.outputs.cache-matched-key }}
+          AX6000_COMPILER_MATCHED_KEY: ${{ steps.compiler_cache.outputs.cache-matched-key }}
+          AX6000_DOWNLOADS_CACHE_OUTCOME: ${{ steps.downloads_cache.outcome }}
+          AX6000_COMPILER_CACHE_OUTCOME: ${{ steps.compiler_cache.outcome }}
+        run: python3 scripts/ax6000-ci-metrics.py prepare "$RUNNER_TEMP/ax6000-metrics"
+
       - name: Build firmware
-        shell: bash
-        run: |
-          set -o pipefail
-          if ! make -j4 2>&1 | tee build.log; then
-            make -j1 V=s 2>&1 | tee -a build.log
-          fi
+        id: firmware
+        run: python3 scripts/ax6000-ci-build.py
+
+      - name: Record optional compiler and cache statistics
+        if: ${{ !cancelled() && steps.firmware.outputs.started == 'true' }}
+        continue-on-error: true
+        env:
+          AX6000_COLD_CACHE: ${{ inputs.cold_cache }}
+          AX6000_DOWNLOADS_MATCHED_KEY: ${{ steps.downloads_cache.outputs.cache-matched-key }}
+          AX6000_COMPILER_MATCHED_KEY: ${{ steps.compiler_cache.outputs.cache-matched-key }}
+          AX6000_DOWNLOADS_CACHE_OUTCOME: ${{ steps.downloads_cache.outcome }}
+          AX6000_COMPILER_CACHE_OUTCOME: ${{ steps.compiler_cache.outcome }}
+        run: python3 scripts/ax6000-ci-metrics.py report "$RUNNER_TEMP/ax6000-metrics"
 
       - name: Verify MTK driver artifacts
         shell: bash
@@ -155,20 +232,8 @@ jobs:
 
           cp .config "$TARGET_DIR/ax6000.config"
           cp ax6000.diffconfig "$TARGET_DIR/ax6000.diffconfig"
-          {
-            echo "repository=${GITHUB_REPOSITORY}"
-            echo "workflow_commit=$(git rev-parse HEAD)"
-            echo "source_tree=$(git rev-parse 'HEAD^{tree}')"
-            echo "roaming_diagnostics=excluded"
-            echo "sdk_upstream_base=9f397975c7b47ce6986a6e39529d2f72fd5c729d"
-            echo "build_time=$(date --utc --iso-8601=seconds)"
-            echo "clang=$(clang --version | head -n1)"
-            while read -r feed_kind feed_name feed_source; do
-              [ "$feed_kind" = src-git ] || continue
-              echo "feed_$feed_name=$(git -C "feeds/$feed_name" rev-parse HEAD)"
-            done < feeds.conf.default
-            sha256sum config/ax6000/feeds/*
-          } > "$TARGET_DIR/build-metadata.txt"
+          python3 scripts/ax6000-build-inputs.py complete \
+            --output-dir ax6000-build-inputs --target-dir "$TARGET_DIR"
 
           sha256sum "$factory" "$sysupgrade" > "$TARGET_DIR/ax6000-images.sha256"
           du -h "$factory" "$sysupgrade"
@@ -186,6 +251,7 @@ jobs:
             ${{ env.TARGET_DIR }}/ax6000.diffconfig
             ${{ env.TARGET_DIR }}/ax6000-images.sha256
             ${{ env.TARGET_DIR }}/build-metadata.txt
+            ${{ env.TARGET_DIR }}/ax6000-build-inputs.json
             ${{ env.TARGET_DIR }}/config.buildinfo
             ${{ env.TARGET_DIR }}/feeds.buildinfo
             ${{ env.TARGET_DIR }}/profiles.json
@@ -205,3 +271,34 @@ jobs:
             defconfig.log
             diffconfig.log
             logs
+
+      - name: Upload build inputs and observations
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: ax6000-build-observations-${{ github.run_number }}-${{ github.run_attempt }}
+          if-no-files-found: ignore
+          retention-days: 14
+          path: |
+            ax6000-build-inputs/
+            ax6000-cache-inputs.json
+            ax6000-cache-state.json
+            ax6000-build-timings.json
+            ${{ runner.temp }}/ax6000-metrics/
+
+      - name: Save source downloads after a build attempt
+        if: ${{ !cancelled() && !inputs.cold_cache && steps.cache_state.outputs.downloads_save == 'true' && steps.downloads.outcome == 'success' && steps.firmware.outputs.started == 'true' }}
+        continue-on-error: true
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: dl
+          key: ${{ steps.cache_inputs.outputs.downloads_key }}
+
+      - name: Save compiler objects after a build attempt
+        if: ${{ !cancelled() && !inputs.cold_cache && steps.cache_state.outputs.compiler_save == 'true' && steps.firmware.outputs.started == 'true' }}
+        continue-on-error: true
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: .ccache
+          key: ${{ steps.cache_inputs.outputs.compiler_key }}

@@ -36,4 +36,10 @@ git-src
 .ccache
 __pycache__/
 *.py[cod]
+/ax6000-cache-inputs.json
+/ax6000-cache-state.json
+/ax6000-build-timings.json
+/ax6000-build-started
+/ax6000-build-inputs/
+/ax6000.diffconfig
 .vscode*
