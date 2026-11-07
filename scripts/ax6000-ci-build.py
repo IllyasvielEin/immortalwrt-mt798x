@@ -19,6 +19,23 @@ def warning(message):
         pass
 
 
+def optional_stdout(value):
+    try:
+        sys.stdout.write(value)
+        sys.stdout.flush()
+        return True
+    except (OSError, ValueError) as error:
+        warning(f"Actions output copy unavailable; continuing make: {error}")
+        # Prevent a second failure during Python's final stdout flush from
+        # replacing the real make result with interpreter exit status 120.
+        try:
+            with open(os.devnull, "w") as sink:
+                os.dup2(sink.fileno(), sys.stdout.fileno())
+        except (AttributeError, OSError, ValueError):
+            pass
+        return False
+
+
 class OptionalLog:
     def __init__(self, path):
         self.file = None
@@ -74,12 +91,7 @@ def drain(process, log, cancelled):
                     value = decoder.decode(chunk)
                 log.write(value)
                 if stdout_usable:
-                    try:
-                        sys.stdout.write(value)
-                        sys.stdout.flush()
-                    except (OSError, ValueError) as error:
-                        stdout_usable = False
-                        warning(f"Actions output copy unavailable; continuing to drain make: {error}")
+                    stdout_usable = optional_stdout(value)
             if not pipe_open and process.poll() is None:
                 time.sleep(0.05)
     return process.wait()
@@ -116,7 +128,7 @@ def build(work=Path("."), commands=None, environment=None):
                 break
             attempt_started = time.monotonic()
             record = {"command": list(args)}
-            print("AX6000 build attempt: " + " ".join(args), flush=True)
+            optional_stdout("AX6000 build attempt: " + " ".join(args) + "\n")
             try:
                 process = subprocess.Popen(args, cwd=work, env=dict(environment),
                                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
