@@ -51,9 +51,9 @@ Nikki 上游仍为 `78e1a751…`，没有新的主提交。受控本地补丁记
   `3f27ef39f8c96bbfbc8b0b9bb10f5c9ef60149d8`，归档摘要固定；不使用 alpha 或预编译替代品。
 - Mihomo 构建时间改用 `SOURCE_DATE_EPOCH`。
 
-`scripts/prepare-ax6000-feeds.py` 离线验证六个 HEAD、补丁摘要和三个完整文件的
+`scripts/prepare-ax6000-feeds.py` 离线验证六个 HEAD、补丁摘要和受控完整文件的
 preimage/postimage，在临时树全部验证后写入；重复执行保持幂等，`--check` 只验证。
-浮动 feed、未审查的 HEAD 以及这三个文件的意外修改会被拒绝；其他 feed 文件只核对
+浮动 feed、未审查的 HEAD 以及 manifest 内文件的意外修改会被拒绝；其他 feed 文件只核对
 HEAD，不检查整个工作区的内容或脏状态。CI 使用新 checkout，不恢复 feed 工作区。
 准备脚本和 feeds 更新不能同时执行。
 
