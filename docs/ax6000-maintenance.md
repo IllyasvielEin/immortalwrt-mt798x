@@ -57,6 +57,12 @@ preimage/postimage，在临时树全部验证后写入；重复执行保持幂�
 HEAD，不检查整个工作区的内容或脏状态。CI 使用新 checkout，不恢复 feed 工作区。
 准备脚本和 feeds 更新不能同时执行。
 
+CI 优化另增加 packages 的 `golang-manifest.json` 和 `120-golang-local-toolchain.patch`，
+为 compiler/host 两处实际 Go 调用固定 `GOTOOLCHAIN=local`，不改最终版本或模块校验。
+受控文件合计为 Nikki 三个、packages 两个。两个临时树全部验证后统一重验输入，
+逐文件原子替换并保留模式；不承诺跨 feed 崩溃事务。Go bootstrap 首次仍默认 source，
+external 为固定官方 1.24.13，只在完整验证后另行考虑切换默认值；见 [CI 说明](ax6000-ci.md)。
+
 `scripts/install-ax6000-feeds.sh` 安装默认 LuCI、defconfig 明确选中的软件及递归依赖，
 不再全量链接未使用的软件包。全量安装在本次锁定 feeds 下会为未选中的 dnsdist、
 WeeChat、Snort 等产生 Kconfig 自循环；没有修改这些软件包，也不绕过依赖检查。

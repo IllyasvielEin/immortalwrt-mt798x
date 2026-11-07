@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "feed": "packages",
+  "feed_revision": "fa25995d74a720c1c98bf6265d3dd8b4eb620d1f",
+  "patches": [
+    {
+      "patch": "120-golang-local-toolchain.patch",
+      "sha256": "c0058b34525febeecc3c47efdd1a2b10c309a6d19f63a35235cbcdba65d9963b",
+      "files": [
+        {
+          "path": "lang/golang/golang-compiler.mk",
+          "preimage_sha256": "6db554871b9a8afa3038c9fb22bcb0bd07c1ea78ed3caa25b4af4ea35b82a04d",
+          "postimage_sha256": "4810a3554589cfc61edfac6e15406f68d43bcde3bdfbc6535029a5426976c467"
+        },
+        {
+          "path": "lang/golang/golang-host-build.mk",
+          "preimage_sha256": "302a298f750efe375c59f9cf736aa6a0c0da6dcab3a7c3ea6832726547802b0c",
+          "postimage_sha256": "281f07ebfe3c7ebe713404f5c2ce6aff473eb493bbf32de25478f785695440c1"
+        }
+      ]
+    }
+  ],
+  "source_notes": "AX6000 local bootstrap integration. Preserve module verification and final Go 1.26.10/1.27.3; force the compiler and host package Make calls to use the selected local toolchain. Based on the reviewed RC01 patch, rebased and fully hashed against the pinned AX6000 packages feed."
+}

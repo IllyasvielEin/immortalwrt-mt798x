@@ -3,6 +3,14 @@ name: Build Redmi AX6000 firmware
 on:
   workflow_dispatch:
     inputs:
+      go_bootstrap:
+        description: 'Host Go bootstrap; external requires the pinned official archive'
+        type: choice
+        required: true
+        default: source
+        options:
+          - source
+          - external
       cold_cache:
         description: 'Fresh runner without restoring or saving download/compiler caches'
         type: boolean
@@ -21,7 +29,7 @@ env:
   TARGET_DIR: bin/targets/mediatek/filogic
   CCACHE_MAXSIZE: 3G
   CCACHE_COMPILERCHECK: content
-  AX6000_GO_BOOTSTRAP_MODE: source
+  AX6000_GO_BOOTSTRAP_MODE: ${{ inputs.go_bootstrap }}
   TZ: Asia/Singapore
 
 jobs:
@@ -135,6 +143,19 @@ jobs:
           AX6000_COMPILER_RESTORED_KEY: ${{ steps.compiler_cache.outputs.cache-matched-key }}
         run: python3 scripts/ax6000-ci-cache.py prepare --output ax6000-cache-state.json
 
+      - name: Select and verify Go bootstrap
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$AX6000_GO_BOOTSTRAP_MODE" in
+            external)
+              bootstrap_root="$(python3 scripts/ax6000-go-bootstrap.py install "$RUNNER_TEMP/ax6000-go-bootstrap")"
+              echo "AX6000_GO_BOOTSTRAP_ROOT=$bootstrap_root" >> "$GITHUB_ENV"
+              ;;
+            source) echo 'AX6000_GO_BOOTSTRAP_ROOT=' >> "$GITHUB_ENV" ;;
+            *) echo 'Invalid bootstrap mode' >&2; exit 1 ;;
+          esac
+
       - name: Update and install feeds
         shell: bash
         run: |
@@ -142,17 +163,20 @@ jobs:
           ./scripts/feeds update -a
           python3 scripts/prepare-ax6000-feeds.py
           sh scripts/install-ax6000-feeds.sh "$CONFIG_FILE"
+          python3 -m unittest discover -s tests -p 'test_ax6000_feeds.py' -v
 
       - name: Generate and validate configuration
         shell: bash
         run: |
           set -euxo pipefail
           cp "$CONFIG_FILE" .config
+          python3 scripts/ax6000-go-bootstrap.py configure .config
           make defconfig 2>&1 | tee defconfig.log
           if grep -Eq '(^|:)error:|recursive dependency detected' defconfig.log; then
             exit 1
           fi
           sh scripts/validate-ax6000-config.sh .config
+          python3 scripts/ax6000-go-bootstrap.py validate-config .config
           ./scripts/diffconfig.sh 2>diffconfig.log | tee ax6000.diffconfig
           if grep -Eq '(^|:)error:|recursive dependency detected' diffconfig.log; then
             cat diffconfig.log
