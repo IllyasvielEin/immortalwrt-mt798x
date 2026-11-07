@@ -58,6 +58,50 @@ class BuildTests(unittest.TestCase):
         self.assertEqual(len(data["attempts"]), 1)
         self.assertEqual(data["attempts"][0]["exit_code"], -signal.SIGTERM)
 
+    def test_persistent_stdout_failure_does_not_block_serial_retry(self):
+        class BrokenAfterChild(io.StringIO):
+            broken = False
+
+            def write(self, value):
+                if "first-child" in value:
+                    self.broken = True
+                if self.broken:
+                    raise BrokenPipeError("stdout remains unavailable")
+                return super().write(value)
+
+        fallback = self.root / "fallback"
+        commands = [
+            [sys.executable, "-c", "print('first-child'); raise SystemExit(2)"],
+            [sys.executable, "-c", f"from pathlib import Path; Path({str(fallback)!r}).touch()"],
+        ]
+        with contextlib.redirect_stdout(BrokenAfterChild()), contextlib.redirect_stderr(io.StringIO()):
+            result = BUILD.build(self.root, commands, self.env)
+        data = json.loads((self.root / "ax6000-build-timings.json").read_text())
+        self.assertEqual(result, 0)
+        self.assertEqual([x["exit_code"] for x in data["attempts"]], [2, 0])
+        self.assertTrue(fallback.exists())
+        self.assertEqual(self.output.read_text(), "started=true\n")
+
+    def test_closed_stdout_pipe_preserves_cli_result_and_retry(self):
+        binary = self.root / "bin"
+        binary.mkdir()
+        make = binary / "make"
+        make.write_text(f"#!{sys.executable}\nfrom pathlib import Path\n"
+                        "calls=Path('make-calls')\ncount=int(calls.read_text())+1 if calls.exists() else 1\n"
+                        "calls.write_text(str(count))\nprint('child output')\n"
+                        "raise SystemExit(2 if count == 1 else 0)\n")
+        make.chmod(0o755)
+        env = {**self.env, "PATH": str(binary) + os.pathsep + os.environ.get("PATH", "")}
+        process = subprocess.Popen([sys.executable, str(SCRIPT)], cwd=self.root, env=env,
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        process.stdout.close()
+        process.stdout = None
+        _, stderr = process.communicate(timeout=5)
+        self.assertEqual(process.returncode, 0, stderr.decode())
+        self.assertEqual((self.root / "make-calls").read_text(), "2")
+        data = json.loads((self.root / "ax6000-build-timings.json").read_text())
+        self.assertEqual([x["exit_code"] for x in data["attempts"]], [2, 0])
+
     def test_spawn_failure_never_publishes_started(self):
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             result = BUILD.build(self.root, [["/missing/ax6000-test-command"]], self.env)
