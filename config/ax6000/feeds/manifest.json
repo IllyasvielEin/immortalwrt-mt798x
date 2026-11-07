@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "feed": "nikki",
+  "feed_revision": "78e1a751d55ed0762811f054ee699049473da7b8",
+  "patches": [
+    {
+      "patch": "100-nikki-sniffer-ports.patch",
+      "sha256": "423ae02dd60761d4c5d927c582c918dfcde4125e0935ad46403dc40d9ac0f4b6",
+      "files": [
+        {
+          "path": "nikki/Makefile",
+          "preimage_sha256": "11b08df6df2a3fc752fb6501b4ba4c7b41cf9a796ff3fde6363b8cdb4803fcf1",
+          "postimage_sha256": "5e05fe62935d3606877430595d8a09e984de3f100a16c353919dff961584930d"
+        },
+        {
+          "path": "nikki/files/ucode/mixin.uc",
+          "preimage_sha256": "2656a8714e9e52ab324bf49245bc305075fe0a78e8e7b5872e203d42f43a41eb",
+          "postimage_sha256": "9d55136a3a27b37d48a99823db5513ee9cc262c609bf9fd778bb486e1441806a"
+        }
+      ]
+    },
+    {
+      "patch": "110-mihomo-1.19.33.patch",
+      "sha256": "144b43e22caba18c44b7df5638c8020be99207526dff90ceb43a195814235e4a",
+      "files": [
+        {
+          "path": "mihomo-meta/Makefile",
+          "preimage_sha256": "5a79fb2dc336a53ff48cdfab9e0daba1601d0690dcf58b76536e44cd0a7d188b",
+          "postimage_sha256": "7819b99814a1f50b8253debab3d3002e46afe7dce8b2119016ad41bfc4befcc4"
+        }
+      ]
+    }
+  ],
+  "source_updates": {
+    "mihomo-meta": {
+      "version": "1.19.33",
+      "source_commit": "3f27ef39f8c96bbfbc8b0b9bb10f5c9ef60149d8",
+      "source_url": "https://github.com/MetaCubeX/mihomo.git",
+      "source_archive": "mihomo-meta-1.19.33.tar.gz",
+      "source_sha256": "8adee049a9c1f653b9c52fbf20fec74da56288961f857289d540193f38c0fa44",
+      "source_epoch": 1792597918,
+      "hash_method": "OpenWrt rawgit archive: umask 022, git core.abbrev 8, commit epoch, sorted tar uid/gid 0, gzip -n; previously cross-checked with dl_github_archive.py"
+    }
+  }
+}

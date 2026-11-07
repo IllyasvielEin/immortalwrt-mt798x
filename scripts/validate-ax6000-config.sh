@@ -9,6 +9,9 @@ config="${1:-.config}"
 	exit 1
 }
 
+python3 scripts/check-ax6000-production.py
+python3 scripts/prepare-ax6000-feeds.py --check
+
 require_y() {
 	symbol="$1"
 	grep -qx "${symbol}=y" "$config" || {
