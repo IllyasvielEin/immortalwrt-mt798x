@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0-only
-"""Verify locked AX6000 feeds and apply reviewed Nikki source patches offline.
+"""Verify locked AX6000 feeds and apply reviewed source patches offline.
 
 Every touched file must match its complete reviewed preimage or postimage.
 All patches are first applied to verified Git baselines in a temporary tree;
-no feed file is written until every revision, input and output is checked.
+no feed file is written until both manifests and all outputs are checked.
+Each file is replaced atomically, but this is not a cross-feed transaction.
 Use --check after preparation to require the complete patched state.
 Feed updates and preparation must not run concurrently.
 """
@@ -12,8 +13,10 @@ Feed updates and preparation must not run concurrently.
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path, PurePosixPath
 import re
+import stat
 import subprocess
 import sys
 import tempfile
@@ -21,6 +24,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 FEEDS = {"packages", "luci", "routing", "telephony", "video", "nikki"}
+MANIFESTS = (("manifest.json", "nikki"), ("golang-manifest.json", "packages"))
 
 
 class PreparationError(ValueError):
@@ -40,7 +44,9 @@ def sha256(data):
 
 def safe_path(directory, relative):
     parts = PurePosixPath(relative)
-    if parts.is_absolute() or not parts.parts or any(p in (".", "..") for p in parts.parts):
+    if (parts.is_absolute() or not parts.parts or str(parts) != relative
+            or any(p in (".", "..") for p in parts.parts)
+            or any(c in relative for c in ("\\", "\x00", "\n", "\r"))):
         raise PreparationError(f"Unsafe relative path: {relative}")
     path = directory.joinpath(*parts.parts)
     current = directory
@@ -74,7 +80,7 @@ def locked_feeds(root):
 
     directories = {}
     for name, revision in revisions.items():
-        directory = root / "feeds" / name
+        directory = safe_path(root, f"feeds/{name}")
         if directory.is_symlink() or not directory.is_dir():
             raise PreparationError(f"Missing feed directory or unexpected symlink: {directory}")
         top = Path(git(directory, "rev-parse", "--show-toplevel").decode().strip()).resolve()
@@ -85,65 +91,129 @@ def locked_feeds(root):
     return revisions, directories
 
 
+def stage_manifest(patch_directory, manifest_name, feed_name, revision, feed, staged, check_only):
+    """Build one verified output tree, without modifying the live feed."""
+    manifest = json.loads(safe_path(patch_directory, manifest_name).read_text())
+    if manifest.get("schema_version") != 1 or manifest.get("feed") != feed_name:
+        raise PreparationError(f"Unsupported AX6000 patch manifest: {manifest_name}")
+    if revision != manifest["feed_revision"]:
+        raise PreparationError(f"{feed_name} revision changed; review source patches before building")
+    recipes = manifest["patches"]
+    if not isinstance(recipes, list) or not recipes:
+        raise PreparationError(f"Empty patch manifest: {manifest_name}")
+    staged.mkdir()
+    plans, seen = [], set()
+    for recipe in recipes:
+        patch = safe_path(patch_directory, recipe["patch"])
+        if sha256(patch.read_bytes()) != recipe["sha256"]:
+            raise PreparationError(f"Patch checksum mismatch: {patch.name}")
+        if not isinstance(recipe["files"], list) or not recipe["files"]:
+            raise PreparationError(f"Empty file list: {patch.name}")
+        for record in recipe["files"]:
+            relative = record["path"]
+            key = (feed_name, relative)
+            if key in seen:
+                raise PreparationError(f"Duplicate patched file: {feed_name}/{relative}")
+            seen.add(key)
+            for digest_name in ("preimage_sha256", "postimage_sha256"):
+                if not re.fullmatch(r"[0-9a-f]{64}", record[digest_name]):
+                    raise PreparationError(f"Invalid file checksum: {feed_name}/{relative}")
+            path = safe_path(feed, relative)
+            metadata = path.stat()
+            if not stat.S_ISREG(metadata.st_mode):
+                raise PreparationError(f"Reviewed input is not a regular file: {path}")
+            mode = stat.S_IMODE(metadata.st_mode)
+            before = path.read_bytes()
+            digest = sha256(before)
+            if digest not in (record["preimage_sha256"], record["postimage_sha256"]):
+                raise PreparationError(f"Unreviewed local changes: {feed_name}/{relative}")
+            if check_only and digest != record["postimage_sha256"]:
+                raise PreparationError(f"Reviewed patch is not applied: {feed_name}/{relative}")
+            baseline = git(feed, "show", f"{revision}:{relative}")
+            if sha256(baseline) != record["preimage_sha256"]:
+                raise PreparationError(f"Git baseline checksum mismatch: {feed_name}/{relative}")
+            output = safe_path(staged, relative)
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_bytes(baseline)
+            plans.append({"feed": feed_name, "relative": relative, "path": path,
+                          "before": before, "mode": mode, "output": output,
+                          "expected": record["postimage_sha256"]})
+        git(staged, "apply", "--check", "--whitespace=error", str(patch))
+        git(staged, "apply", "--whitespace=error", str(patch))
+
+    actual_paths = set()
+    for path in staged.rglob("*"):
+        if path.is_symlink():
+            raise PreparationError(f"Patch produced an unreviewed symlink: {path}")
+        if path.is_file():
+            actual_paths.add((feed_name, path.relative_to(staged).as_posix()))
+    if actual_paths != seen:
+        raise PreparationError(f"Patches changed files outside the {feed_name} manifest")
+    for plan in plans:
+        plan["after"] = plan["output"].read_bytes()
+        if sha256(plan["after"]) != plan["expected"]:
+            raise PreparationError(f"Patched output checksum mismatch: {plan['path']}")
+    return plans
+
+
+def recheck_inputs(root, revisions, directories, plans):
+    """Recheck both HEADs and every live file before the first write."""
+    current_revisions, current_directories = locked_feeds(root)
+    if current_revisions != revisions or current_directories != directories:
+        raise PreparationError("Feed revisions changed during preparation")
+    for plan in plans:
+        path = safe_path(directories[plan["feed"]], plan["relative"])
+        if (path != plan["path"] or path.read_bytes() != plan["before"]
+                or stat.S_IMODE(path.stat().st_mode) != plan["mode"]):
+            raise PreparationError(f"Feed changed during preparation: {path}")
+
+
+def replace_file(plan, feed):
+    """Replace a single file atomically; no cross-file rollback is promised."""
+    path = safe_path(feed, plan["relative"])
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(prefix=".ax6000-feed-", dir=path.parent, delete=False) as output:
+            temporary = Path(output.name)
+            output.write(plan["after"])
+            output.flush()
+            os.fchmod(output.fileno(), plan["mode"])
+            os.fsync(output.fileno())
+        # Preparation and feed update may not run concurrently. Still reject
+        # a changed target/path rather than silently replacing another input.
+        path = safe_path(feed, plan["relative"])
+        if (path.read_bytes() != plan["before"]
+                or stat.S_IMODE(path.stat().st_mode) != plan["mode"]):
+            raise PreparationError(f"Feed changed before replacement: {path}")
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
 def prepare(root, check_only=False):
     root = Path(root).resolve()
     revisions, directories = locked_feeds(root)
-    patch_directory = root / "config" / "ax6000" / "feeds"
-    manifest = json.loads((patch_directory / "manifest.json").read_text())
-    if manifest.get("schema_version") != 1 or manifest.get("feed") != "nikki":
-        raise PreparationError("Unsupported AX6000 patch manifest")
-    if revisions["nikki"] != manifest["feed_revision"]:
-        raise PreparationError("Nikki revision changed; review the source patches before building")
-    feed = directories["nikki"]
-    plans = []
-    seen = set()
-
+    patch_directory = safe_path(root, "config/ax6000/feeds")
     with tempfile.TemporaryDirectory(prefix="ax6000-feed-patches-") as temporary:
         staged = Path(temporary)
-        for recipe in manifest["patches"]:
-            patch = safe_path(patch_directory, recipe["patch"])
-            if sha256(patch.read_bytes()) != recipe["sha256"]:
-                raise PreparationError(f"Patch checksum mismatch: {patch.name}")
-            for record in recipe["files"]:
-                relative = record["path"]
-                if relative in seen:
-                    raise PreparationError(f"Duplicate patched file: {relative}")
-                seen.add(relative)
-                path = safe_path(feed, relative)
-                before = path.read_bytes()
-                digest = sha256(before)
-                if digest not in (record["preimage_sha256"], record["postimage_sha256"]):
-                    raise PreparationError(f"Unreviewed local changes: {relative}")
-                if check_only and digest != record["postimage_sha256"]:
-                    raise PreparationError(f"Reviewed patch is not applied: {relative}")
-                baseline = git(feed, "show", f"{revisions['nikki']}:{relative}")
-                if sha256(baseline) != record["preimage_sha256"]:
-                    raise PreparationError(f"Git baseline checksum mismatch: {relative}")
-                output = safe_path(staged, relative)
-                output.parent.mkdir(parents=True, exist_ok=True)
-                output.write_bytes(baseline)
-                plans.append((path, before, output, record["postimage_sha256"]))
-            git(staged, "apply", "--check", "--whitespace=error", str(patch))
-            git(staged, "apply", "--whitespace=error", str(patch))
-
-        actual_paths = {p.relative_to(staged).as_posix() for p in staged.rglob("*") if p.is_file()}
-        if actual_paths != seen:
-            raise PreparationError("Patches changed files outside their reviewed manifest")
-        updates = []
-        for path, before, output, expected in plans:
-            after = output.read_bytes()
-            if sha256(after) != expected:
-                raise PreparationError(f"Patched output checksum mismatch: {path}")
-            updates.append((path, before, after))
-        # Check every live preimage again before writing any of them.
-        for path, before, _ in updates:
-            if path.is_symlink() or path.read_bytes() != before:
-                raise PreparationError(f"Feed changed during preparation: {path}")
+        plans, seen = [], set()
+        for manifest_name, feed_name in MANIFESTS:
+            additions = stage_manifest(patch_directory, manifest_name, feed_name,
+                                       revisions[feed_name], directories[feed_name],
+                                       staged / feed_name, check_only)
+            for plan in additions:
+                key = (plan["feed"], plan["relative"])
+                if key in seen:
+                    raise PreparationError(f"Duplicate patched file: {key}")
+                seen.add(key)
+            plans.extend(additions)
+        recheck_inputs(root, revisions, directories, plans)
         changed = 0
         if not check_only:
-            for path, before, after in updates:
-                if before != after:
-                    path.write_bytes(after)
+            for plan in plans:
+                if plan["before"] != plan["after"]:
+                    replace_file(plan, directories[plan["feed"]])
                     changed += 1
     return changed
 
