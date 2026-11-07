@@ -53,7 +53,9 @@ Nikki 上游仍为 `78e1a751…`，没有新的主提交。受控本地补丁记
 
 `scripts/prepare-ax6000-feeds.py` 离线验证六个 HEAD、补丁摘要和三个完整文件的
 preimage/postimage，在临时树全部验证后写入；重复执行保持幂等，`--check` 只验证。
-浮动 feed、意外修改或未审查基线会被拒绝。准备脚本和 feeds 更新不能同时执行。
+浮动 feed、未审查的 HEAD 以及这三个文件的意外修改会被拒绝；其他 feed 文件只核对
+HEAD，不检查整个工作区的内容或脏状态。CI 使用新 checkout，不恢复 feed 工作区。
+准备脚本和 feeds 更新不能同时执行。
 
 `scripts/install-ax6000-feeds.sh` 安装默认 LuCI、defconfig 明确选中的软件及递归依赖，
 不再全量链接未使用的软件包。全量安装在本次锁定 feeds 下会为未选中的 dnsdist、
