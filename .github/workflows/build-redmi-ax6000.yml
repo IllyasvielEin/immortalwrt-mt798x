@@ -2,12 +2,6 @@ name: Build Redmi AX6000 firmware
 
 on:
   workflow_dispatch:
-    inputs:
-      sync_upstream:
-        description: Merge the latest upstream 25.12 branch before building
-        required: true
-        type: boolean
-        default: true
 
 permissions:
   contents: read
@@ -34,18 +28,13 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Merge latest upstream source
-        if: ${{ inputs.sync_upstream }}
+      - name: Check production source
         shell: bash
         run: |
           set -euo pipefail
-          if ! git remote get-url upstream >/dev/null 2>&1; then
-            git remote add upstream https://github.com/chasey-dev/immortalwrt-mt798x-rebase.git
-          fi
-          git fetch upstream 25.12
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git merge --no-edit upstream/25.12
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          python3 scripts/check-ax6000-production.py
+          python3 -m unittest discover -s tests -p 'test_ax6000_*.py' -v
 
       - name: Reclaim runner disk space
         shell: bash
@@ -96,19 +85,24 @@ jobs:
         run: |
           set -euxo pipefail
           ./scripts/feeds update -a
-          ./scripts/feeds install -a
-          # Nikki publishes stable and alpha cores with symmetric CONFLICTS.
-          # Keeping both package definitions triggers a Kconfig dependency loop.
-          ./scripts/feeds uninstall mihomo-alpha
+          python3 scripts/prepare-ax6000-feeds.py
+          sh scripts/install-ax6000-feeds.sh "$CONFIG_FILE"
 
       - name: Generate and validate configuration
         shell: bash
         run: |
           set -euxo pipefail
           cp "$CONFIG_FILE" .config
-          make defconfig
+          make defconfig 2>&1 | tee defconfig.log
+          if grep -Eq '(^|:)error:|recursive dependency detected' defconfig.log; then
+            exit 1
+          fi
           sh scripts/validate-ax6000-config.sh .config
-          ./scripts/diffconfig.sh | tee ax6000.diffconfig
+          ./scripts/diffconfig.sh 2>diffconfig.log | tee ax6000.diffconfig
+          if grep -Eq '(^|:)error:|recursive dependency detected' diffconfig.log; then
+            cat diffconfig.log
+            exit 1
+          fi
 
       - name: Download sources
         shell: bash
@@ -133,6 +127,7 @@ jobs:
           mt_wifi_module="$(find build_dir -type f -path '*/mt_wifi_ap/mt_wifi.ko' -print -quit)"
           test -n "$mt_wifi_module"
           llvm-nm "$mt_wifi_module" > mt-wifi.symbols
+          python3 scripts/check-ax6000-production.py --symbols mt-wifi.symbols
           for symbol in \
             RRM_ReadParametersFromFile \
             WNM_ReadParametersFromFile \
@@ -164,14 +159,15 @@ jobs:
             echo "repository=${GITHUB_REPOSITORY}"
             echo "workflow_commit=$(git rev-parse HEAD)"
             echo "source_tree=$(git rev-parse 'HEAD^{tree}')"
-            echo "upstream_25_12=$(git rev-parse upstream/25.12 2>/dev/null || echo not-fetched)"
+            echo "roaming_diagnostics=excluded"
+            echo "sdk_upstream_base=9f397975c7b47ce6986a6e39529d2f72fd5c729d"
             echo "build_time=$(date --utc --iso-8601=seconds)"
             echo "clang=$(clang --version | head -n1)"
-            for feed in feeds/*; do
-              if git -C "$feed" rev-parse HEAD >/dev/null 2>&1; then
-                echo "feed_$(basename "$feed")=$(git -C "$feed" rev-parse HEAD)"
-              fi
-            done
+            while read -r feed_kind feed_name feed_source; do
+              [ "$feed_kind" = src-git ] || continue
+              echo "feed_$feed_name=$(git -C "feeds/$feed_name" rev-parse HEAD)"
+            done < feeds.conf.default
+            sha256sum config/ax6000/feeds/*
           } > "$TARGET_DIR/build-metadata.txt"
 
           sha256sum "$factory" "$sysupgrade" > "$TARGET_DIR/ax6000-images.sha256"
@@ -206,4 +202,6 @@ jobs:
           path: |
             build.log
             download.log
+            defconfig.log
+            diffconfig.log
             logs

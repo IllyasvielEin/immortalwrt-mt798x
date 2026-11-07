@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: GPL-2.0-only
+# AX6000 local source recipe patch; preserve upstream attribution and license.
+# Use the Mihomo ports field; retain the UCI port option and bump the package release.
+--- a/nikki/Makefile
++++ b/nikki/Makefile
+@@ -2,7 +2,7 @@
+ 
+ PKG_NAME:=nikki
+ PKG_VERSION:=2026.10.10
+-PKG_RELEASE:=1
++PKG_RELEASE:=2
+ 
+ PKG_LICENSE:=GPL3.0+
+ PKG_MAINTAINER:=Joseph Mory <morytyann@gmail.com>
+--- a/nikki/files/ucode/mixin.uc
++++ b/nikki/files/ucode/mixin.uc
+@@ -144,7 +144,7 @@
+ 		if (!uci_bool(section.enabled)) {
+ 			return;
+ 		}
+-		config['sniffer']['sniff'][section.protocol]['port'] = uci_array(section.port);
++		config['sniffer']['sniff'][section.protocol]['ports'] = uci_array(section.port);
+ 		config['sniffer']['sniff'][section.protocol]['override-destination'] = uci_bool(section.overwrite_destination);
+ 	});
+ }
