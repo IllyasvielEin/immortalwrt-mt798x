@@ -10,6 +10,7 @@ config="${1:-.config}"
 }
 
 python3 scripts/check-ax6000-production.py
+python3 scripts/check-ax6000-bridge.py --openwrt "$config"
 python3 scripts/prepare-ax6000-feeds.py --check
 
 require_y() {

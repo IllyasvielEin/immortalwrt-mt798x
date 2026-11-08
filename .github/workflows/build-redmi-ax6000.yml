@@ -241,6 +241,30 @@ jobs:
             test -n "$(find build_dir -type f -name "$module" -print -quit)"
           done
 
+      - name: Verify controlled bridge profile and production helpers
+        shell: bash
+        run: |
+          set -euo pipefail
+          kernel="$(find build_dir -type d -path '*/linux-mediatek_filogic/linux-6.12.*' -print -quit)"
+          hnat="$(find build_dir -type f -name mtkhnat.ko -print -quit)"
+          warp="$(find build_dir -type f -name mtk_warp.ko -print -quit)"
+          netifd="$(find build_dir -type f -name ap-bridge.c -path '*/netifd-*/*' -printf '%h\n' -quit)"
+          driver="$(find build_dir -type f -path '*/mt_wifi_ap/mt_wifi.ko' -printf '%h\n' -quit)"
+          mode="$(find build_dir -type f -path '*/root-mediatek/usr/share/ax6000/forwarding-mode' -print -quit)"
+          test -n "$kernel" && test -n "$hnat" && test -n "$warp"
+          test -n "$netifd" && test -n "$mode" && test -n "$driver"
+          python3 scripts/check-ax6000-bridge.py --openwrt .config \
+            --kernel "$kernel" --hnat "$hnat" --warp "$warp" --mode-file "$mode"
+          export MTK_AP_BRIDGE_KERNEL_TREE="$PWD/$kernel"
+          export MTK_AP_BRIDGE_WARP_TREE="$(dirname "$PWD/$warp")"
+          export MTK_AP_BRIDGE_NETIFD_TREE="$PWD/$netifd"
+          export MTK_AP_BRIDGE_DRIVER_TREE="$(dirname "$PWD/$driver")"
+          python3 tests/ax6000_bridge_kernel/run.py
+          python3 tests/ax6000_bridge_lifecycle/run.py --kernel-source "$kernel"
+          python3 tests/ax6000_bridge_warp/run.py
+          sh tests/ax6000_bridge_driver/run.sh
+          python3 -m unittest discover -s tests/ax6000_bridge_control -p test_control.py -v
+
       - name: Verify images and record revisions
         shell: bash
         run: |
