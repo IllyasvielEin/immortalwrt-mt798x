@@ -1,6 +1,6 @@
 # r3：BSS 激活、配置失败与真正阻流的合同
 
-2026-11-09。这是对 Astra r2 审查 P1-1 及相关 netns P2 的源码设计修订，供主方案合并与复审。仅新增本文；未修改实现、联网、编译、操作路由器或启动子代理。生产基线仍为 `c196312d3916fad77fa0bb47db57e4b685c15f03`；实施工作树已独立为 `fix/ax6000-bridge-forwarding`。
+2026-11-09。对 Astra r2 P1-1 的设计细化，现按固定 CPU 主稿及 r3 审查的 P2 修订，仍未实施。生产基线 `c196312d3916fad77fa0bb47db57e4b685c15f03`；工作树 `fix/ax6000-bridge-forwarding`。不再依赖通用 topology epoch/backend，实际 COMMIT 核验见 `bridge-r3-cpu-profile-activation.md`；r3.1 主稿为最终权威。
 
 ## 1. 结论与收敛边界
 
@@ -51,14 +51,14 @@ gate 的短锁只保护状态、lease 与 reader 进入；不在持 gate 锁时�
 
 reader 的作用范围必须覆盖它保护的实际动作：晚期 RX reader 一直覆盖到内部转发决定结束或实际交 Linux 的调用返回；最终 TX reader 覆盖到 descriptor 提交/拒绝结束。只在读 READY 的那一瞬间计数没有意义。已提交 DMA 不再持计数，也不声称 prepare 确认无线介质上没有旧帧。
 
-租约值由本次已有 built-in L2 guard/core 提供一个普通导出的单调 u64 分配 helper；core 不能随 mt_wifi 卸载而重置。owner、transaction、lease 均不可复用，溢出则拒绝激活。prepare 立即撤销许可，commit 分配新 lease；重建 adapter、ifindex 被复用、BSS down/up 都不会使旧包重新有效。无需全局逐包 lookup registry：RX/TX 均拿当前实际 wdev 的 gate 与包内值比较。
+租约值由小型 built-in core helper 提供普通导出的单调 u64 分配，不能随 mt_wifi 卸载而重置；不带拓扑/backend功能。owner、transaction、lease 均不可复用，溢出拒激活。prepare 撤销许可，commit 分配新 lease；重建 adapter、ifindex 复用、down/up 均不使旧包重新有效。无需全局逐包 lookup registry：RX/TX 拿实际 wdev gate 与包内值比较。
 
 ## 4. 阻流入口、旧队列与控制帧
 
 ### 4.1 RX：在真实入口阻新包，在共同晚期入口阻旧包
 
 1. 先按 r3 RX parser 合同完成有界格式/控制/非法分类，保持实际 RX peer 的 Class2/3、密码学、PrivacyFilter、PortSecured 等检查。不能只读 skb 的 EAPOL 位或 EtherType 创建例外。
-2. 两个 `rx_*data_frm_announce()` 的普通 AP 普通数据分支，在 BA/普通指示之前，要求 gate READY，并把 owner+当前 lease 写入 skb extension。关闭时普通数据立即释放；不入 BA，不调用 legacy。未授权聚合按 RX 方案整体拒绝或逐 MSDU 分离，不能借第一子帧放行。
+2. 两个 `dev_rx_*()`/`check_rx_pkt_allowed()` 取得实际 `pEntry->wdev` 后、调用 `ops->rx_pkt_allowed` 及读取配置之前，为规范 parser 判定的普通 AP 数据取得 READY/profile reader。所有返回配对释放，覆盖同步配置读取至队列接管/handoff；源授权通过后，在两个 announce 的 BA/普通指示之前写入 owner+当前 lease。关闭时拒普通数据，不入BA/legacy。未授权聚合不借首个控制子帧放行。
 3. BA、SW/HW A-MSDU、Ralink 第二 MSDU 后进入 common announce 时，先核验 RX lease 属于当前 gate 且仍 READY，建立覆盖现有 VLAN policy 处理至 handoff 的 reader。AP callback 再保证普通数据不能在任何 `MacTab.Size` 快捷路径、内部 group clone、DA lookup 之前漏过同一许可。不能等 VLAN 改写已读了新配置之后才开始 reader。缺租约、旧租约、错误 owner 都拒绝；**不得给 BA 出队或缺标签的子帧补发当前租约。**
 4. reader 覆盖共同晚期决定至实际 Linux handoff，不能只有 AP callback 返回时的检查。这样 prepare 能确认所有旧许可的驱动内转/上送决定已经退出；新包即使发现当前无 bridge flag，也没有机会进入 legacy。
 
@@ -74,7 +74,7 @@ reader 的作用范围必须覆盖它保护的实际动作：晚期 RX reader �
 
 ### 4.3 正式 skb extension，不借用已占满的 cb
 
-新增一个正式 extension ID，例如 `SKB_EXT_MTK_BSS`，结构内用两个独立子区：配置租约与 P1-4 ownership。配置区最小为 RX `{owner,lease}`、TX `{owner,lease}` 四个 u64；不放 adapter/wdev/STA 指针，不需要模块析构 callback。ownership helper 不得清除/改写租约，反之亦然。
+新增正式 extension ID，例如 `SKB_EXT_MTK_BSS`，最小为 RX `{owner,lease}`、TX `{owner,lease}` 四个 u64；不放 adapter/wdev/STA 指针，不需要模块析构 callback。固定 CPU profile 的 P1-4 已在 producer 源头终结，不保存 ownership/账户/producer epoch 扩展；RX/TX写入彼此独立。
 
 修改 kernel `include/linux/skbuff.h` 的 enum、共享值型结构头及 `net/core/skbuff.c` 的 `skb_ext_type_len[]`；生产选择 `CONFIG_SKB_EXTENSIONS=y`。保留原 `SKB_EXT_NUM<8`/长度 BUILD_BUG_ON，不能为了塞字段取消边界。调用者用 `skb_ext_add()` 获可写 COW 视图，不能修改 `skb_ext_find()` 返回的共享内容。extension 新分配不假设整段数据已清零：公共 helper 在确认为首次创建时初始化全结构，已存在时只改自己拥有的子字段。内存失败普通数据拒绝，不无标签继续。
 
@@ -109,12 +109,12 @@ reader 的作用范围必须覆盖它保护的实际动作：晚期 RX reader �
 | 操作 | 必须行为 |
 | --- | --- |
 | GET | 查询 ABI/owner/state/driver_ready；不改变门；接口 DOWN 可用 |
-| PREPARE | 校验 owner，关闭门、撤销 lease、drain，完成父方案所需 backend 屏障；成功才返回 blocked=true 与新 transaction token |
+| PREPARE | 校验 owner，关闭门、撤销 lease、drain；成功才返回 blocked=true 与新 transaction token；不发起 topology/cache backend 事务 |
 | STAGE_DOMAIN | 仅匹配 BLOCKED transaction 可写配置意图；暂存普通 AP 模式、静态网络域/实际 port、必要策略值，不放行 |
-| COMMIT | 校验相同 owner/token、全部 driver/profile 资源就绪、域快照、稳定 topology token、后台可用；发布新 lease/READY |
+| COMMIT | 校验相同 owner/token、driver/固定CPU profile就绪、RTNL内全部实际域/策略与快照一致；复核sticky fault后发布新lease/READY |
 | ABORT | 匹配事务保持 FAILED_BLOCKED，清理未发布 snapshot；不恢复旧 READY |
 
-STAGE_DOMAIN 可按配置中的实际端口逐项提交，域记录只含 netdev/VLAN/policy 事实，不含终端身份；这样不需要一个带任意用户指针的大批量结构。事务结束有明确 count，重试不重复添加，OOM/截断/重复冲突均失败。COMMIT 前把完整 snapshot 和输出预先准备好；copy_to_user 失败时仍 BLOCKED。**READY 发布后不得再执行可能失败的分配、用户拷贝或 backend 操作。** syscall 返回成功才可把 reply 当放行确认。
+STAGE_DOMAIN 按实际端口逐项提交，仅含netdev/VLAN/policy，明确count，重试不重复添加，OOM/截断/冲突失败。COMMIT先完成snapshot、核验与handler自身copy_to_user；其失败保持BLOCKED。之后在同一串行规则下复核owner/token/state/sticky fault才发布READY，handler不再做可能失败的动作。native/compat外层syscall仍可能失败：负返回/超时视结果不确定，GET并重新PREPARE取得成功blocked ACK前不清理、不mark_up。完整源码实施时核外层copyout，不以handler局部顺序担保整次syscall。
 
 同一 netifd owner 的嵌套 bridge/VLAN 操作复用一份在途 transaction，不能每次 enable_member 都再次分配 token 使上层事务过期。C helper 在已有已确认 BLOCKED 事务时幂等返回该 token；相冲突的并行配置返回 EBUSY。恢复/重做事务显式废弃旧 token 后再 prepare。netifd/handler 退出或超时不自动放开门；重启的 parent 必须 GET、重新 prepare 和重建全部就绪证据，不能接管旧 token 后直接 commit。ABORT 只处理已阻流事务；已经 READY 的失败处理必须先正式 PREPARE，不能把 ABORT 名称当同步阻流证明。
 
@@ -137,7 +137,7 @@ owner 收集所有实际需要的网络绑定/bridge port/VLAN child，不允许
 3. `config.uc` 执行 DAT/profile、必要 reload/ifup；ifdown、modprobe/rmmod、ifup 的失败必须真实返回。影响 sibling 的路径不能继续盲目 ifup 然后靠后台 `wifi up &` 宣称成功；由 parent 对受影响 owner 重新收集绑定和就绪结果。profile 全局值（含 BTNBSSID）完成前不提交任一依赖 BSS。
 4. MTK `netifd.uc:set_vif/set_vlan` 通过 SET_DATA 报内部 ABI 能力、owner 与 transaction。`wireless-device.uc:wdev_set_data()` 保存它们，`handle_link()` 向 device_set 传显式 true/false 能力与 owner。
 5. parent 在已 BLOCKED 的 BSS 上执行所有 `device_set/interface_handle_link`，创建/加入真实 bridge/VLAN port，应用 hairpin、NoForwarding 对应策略、isolated、VLAN membership/PVID 等。标准返回值全部检查，不能只看 notify 成功。
-6. 汇总所有端口，读取实际 bridge master、tag ancestry、UP、hairpin/isolated 和所需 VLAN 配置。开始读回前 GET 一个稳定 core topology token，读回后 COMMIT 必须仍匹配同 token；期间有变化则保持 BLOCKED 并重新读取，不能冒用新 token 给旧读回背书。所需设置写入路径都应纳入父方案已要求的同步 topology 事务。
+6. 汇总全部端口，用户态读回用于错误定位；实际COMMIT在同一RTNL临界区完整核验对象、master、直接VLAN ancestry、UP、策略0/1及membership/PVID/untagged。核验至READY发布不能插入另一套控制拓扑；不使用core topology token或backend事务。snapshot和实际不一致保持BLOCKED。
 7. STAGE_DOMAIN 记录本轮明确的 standalone/bridge 意图，COMMIT 获取新 lease。最后才将 wdev state 设 up 并成功回复 CMD_UP。
 
 这里需要真实修复原本无返回的控制层：N `system-linux.c:427` 一类 void sysfs setter、`:940 system_bridge_set_wireless()` 改为返回可检查错误并读回；`system_bridge_addif()` 只有在实际 master 正确时才继续策略阶段。N `bridge.c` 的 VLAN/membership helper 同样逐层返回错误，不能在 `bridge_member_enable_vlans()` 吞掉子操作失败再宣称 member READY。readback 使用实际 port ifindex/master 以及 kernel netlink/sysfs 值；预期布尔 false 也必须写入并确认，不能只核 true。
@@ -175,11 +175,11 @@ READY 另持一份本次控制事务明确发布的**配置意图 snapshot**。�
 
 snapshot 是配置事实的最小锁存，用于阻止失败/意外移桥恢复 legacy；不是把 Linux FDB、队列、每个 packet 的全部拓扑做影子副本。常规网络变更由上述 netifd prepare 协调；任意 root 私自改内核/禁 hook 不构成本次产品接口支持。
 
-## 8. backend 与退出的边界
+## 8. 固定 CPU profile 与退出的边界
 
-CPU gate 不能声称阻止 PPE 已缓存流、WARP 私有回注或正在 DMA 的硬件。PREPARE 的总成功需要父方案 P1-2/P1-3 的 backend 状态/真实停消费屏障；backend RESETTING、FAILED、注销未完成均不可因“当前没有 callback”被当无后端成功。驱动 gate 先关闭，但这些失败必须原样上报，保持 blocked fault，关系清理不越过没有完成的屏障。
+CPU gate 不声称停止DMA。固定产品从启动无BIND/NF-flow/private producer，故PREPARE只需本BSS软件reader阻流，不为每个拓扑变更执行硬件清表。COMMIT和后续普通数据准入都核固定profile ready/error；未注册/RESETTING/FAILED不能以NULL callback当成功。SER/WED实际停流和DMA资源寿命由主稿及checked STOP合同处理，不能由软件blocked状态冒充。
 
-本设计不再单独重写 backend SER、hook/work/DMA 生命周期；使用对应 r3 合同。对已确认桥依赖流恒不加速的正常配置，其软件 ordinary gate 就能阻新 RX/legacy，但仍不能把此证明扩大到硬件 teardown/remove 的所有资源安全。
+本文件不增加通用backend SER/hook registry。软件gate阻新普通RX/legacy的证明不扩展到硬件 teardown/remove；固定常驻资源、checked CPU restore及WARP STOP错误按主稿落实。
 
 driver/wdev 退出先 STOPPING/revoke，停止新 gate reader，drain，按既有 BA/TX/timer 生命周期排空或释放，最后注销 NF hook并按准确合同 grace 后释放 adapter/快照/gate。新 owner 永不继承旧 lease。队列持有的 extension 只有值，普通 skb 释放不回调已经卸载的模块。
 
