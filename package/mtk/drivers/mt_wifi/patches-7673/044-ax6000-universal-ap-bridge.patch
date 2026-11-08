@@ -1,0 +1,4500 @@
+--- a/mt_wifi/chips/mt7986.c
++++ b/mt_wifi/chips/mt7986.c
+@@ -5451,6 +5451,11 @@
+ static INT hif_set_WFDMA(RTMP_ADAPTER *pAd, INT32 TxRx, BOOLEAN enable)
+ {
+ 	UINT32 val0 = 0;
++#ifdef CONFIG_MTK_AP_BRIDGE
++	UINT32 actual, mask;
++	if (TxRx != DMA_TX && TxRx != DMA_RX && TxRx != DMA_TX_RX)
++		return FALSE;
++#endif
+ #ifdef WHNAT_SUPPORT
+ 	RTMP_CHIP_CAP *cap = hc_get_chip_cap(pAd->hdev_ctrl);
+ #endif
+@@ -5507,6 +5512,12 @@
+ 		break;
+ 	}
+ 	RTMP_IO_WRITE32(pAd->hdev_ctrl, WF_WFDMA_HOST_DMA0_WPDMA_GLO_CFG_ADDR, val0);
++#ifdef CONFIG_MTK_AP_BRIDGE
++	mask = WF_WFDMA_HOST_DMA0_WPDMA_GLO_CFG_TX_DMA_EN_MASK |
++		WF_WFDMA_HOST_DMA0_WPDMA_GLO_CFG_RX_DMA_EN_MASK;
++	RTMP_IO_READ32(pAd->hdev_ctrl, WF_WFDMA_HOST_DMA0_WPDMA_GLO_CFG_ADDR, &actual);
++	if ((actual & mask) != (val0 & mask)) return FALSE;
++#endif
+ 
+ 	/* configure PCIe 1 host dma if it's in use, check if recognition ID is written */
+ 	if (MT7986_get_rid_value() != DEFAULT_RID) {
+@@ -5562,6 +5573,12 @@
+ 			break;
+ 		}
+ 		RTMP_IO_WRITE32(pAd->hdev_ctrl, WF_WFDMA_HOST_DMA0_PCIE1_WPDMA_GLO_CFG_ADDR, val0);
++#ifdef CONFIG_MTK_AP_BRIDGE
++		mask = WF_WFDMA_HOST_DMA0_PCIE1_WPDMA_GLO_CFG_TX_DMA_EN_MASK |
++			WF_WFDMA_HOST_DMA0_PCIE1_WPDMA_GLO_CFG_RX_DMA_EN_MASK;
++		RTMP_IO_READ32(pAd->hdev_ctrl, WF_WFDMA_HOST_DMA0_PCIE1_WPDMA_GLO_CFG_ADDR, &actual);
++		if ((actual & mask) != (val0 & mask)) return FALSE;
++#endif
+ 	}
+ 
+ #define WPDMA_DISABLE -1
+--- a/mt_wifi/embedded/ap/ap_cfg.c
++++ b/mt_wifi/embedded/ap/ap_cfg.c
+@@ -14132,7 +14132,7 @@
+ 	TRUE if all parameters are OK, FALSE otherwise
+     ==========================================================================
+ */
+-INT	Set_NoForwarding_Proc(
++static INT	mtk_guarded_Set_NoForwarding_Proc(
+ 	IN	PRTMP_ADAPTER	pAd,
+ 	IN	RTMP_STRING *arg)
+ {
+@@ -14157,6 +14157,22 @@
+ 	MTWF_DBG(pAd, DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_INFO, "IF(ra%d) Set_NoForwarding_Proc::(NoForwarding=%ld)\n",
+ 			 ifIndex, pAd->ApCfg.MBSSID[ifIndex].IsolateInterStaTraffic);
+ 	return TRUE;
++}
++
++INT	Set_NoForwarding_Proc(
++	IN	PRTMP_ADAPTER	pAd,
++	IN	RTMP_STRING *arg)
++{
++	INT ret;
++#ifdef CONFIG_MTK_AP_BRIDGE
++	if (!mtk_ap_config_enter(pAd, NULL))
++		return FALSE;
++#endif
++	ret = mtk_guarded_Set_NoForwarding_Proc(pAd, arg);
++#ifdef CONFIG_MTK_AP_BRIDGE
++	mtk_ap_config_exit(pAd);
++#endif
++	return ret;
+ }
+ 
+ /*
+@@ -14167,7 +14183,7 @@
+ 	TRUE if all parameters are OK, FALSE otherwise
+     ==========================================================================
+ */
+-INT	Set_NoForwardingBTNSSID_Proc(
++static INT	mtk_guarded_Set_NoForwardingBTNSSID_Proc(
+ 	IN	PRTMP_ADAPTER	pAd,
+ 	IN	RTMP_STRING *arg)
+ {
+@@ -14185,6 +14201,22 @@
+ 	MTWF_DBG(pAd, DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_INFO, "(NoForwarding=%ld)\n",
+ 			 pAd->ApCfg.IsolateInterStaTrafficBTNBSSID);
+ 	return TRUE;
++}
++
++INT	Set_NoForwardingBTNSSID_Proc(
++	IN	PRTMP_ADAPTER	pAd,
++	IN	RTMP_STRING *arg)
++{
++	INT ret;
++#ifdef CONFIG_MTK_AP_BRIDGE
++	if (!mtk_ap_config_enter(pAd, NULL))
++		return FALSE;
++#endif
++	ret = mtk_guarded_Set_NoForwardingBTNSSID_Proc(pAd, arg);
++#ifdef CONFIG_MTK_AP_BRIDGE
++	mtk_ap_config_exit(pAd);
++#endif
++	return ret;
+ }
+ 
+ /*
+@@ -14240,7 +14272,7 @@
+ 	TRUE if parameters are OK, FALSE otherwise
+     ==========================================================================
+ */
+-INT Set_VLANEn_Proc(RTMP_ADAPTER *pAd, RTMP_STRING *arg)
++static INT mtk_guarded_Set_VLANEn_Proc(RTMP_ADAPTER *pAd, RTMP_STRING *arg)
+ {
+ 	UINT vlan_en;
+ 
+@@ -14256,6 +14288,20 @@
+ 	MTWF_DBG(pAd, DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_NOTICE, "(vlan_en=%d)\n",
+ 			 pAd->CommonCfg.bEnableVlan);
+ 	return TRUE;
++}
++
++INT Set_VLANEn_Proc(RTMP_ADAPTER *pAd, RTMP_STRING *arg)
++{
++	INT ret;
++#ifdef CONFIG_MTK_AP_BRIDGE
++	if (!mtk_ap_config_enter(pAd, NULL))
++		return FALSE;
++#endif
++	ret = mtk_guarded_Set_VLANEn_Proc(pAd, arg);
++#ifdef CONFIG_MTK_AP_BRIDGE
++	mtk_ap_config_exit(pAd);
++#endif
++	return ret;
+ }
+ 
+ /*
+@@ -14266,7 +14312,7 @@
+ 	TRUE if all parameters are OK, FALSE otherwise
+     ==========================================================================
+ */
+-INT	Set_VLANID_Proc(
++static INT	mtk_guarded_Set_VLANID_Proc(
+ 	IN	PRTMP_ADAPTER	pAd,
+ 	IN	RTMP_STRING *arg)
+ {
+@@ -14316,6 +14362,22 @@
+ 	return TRUE;
+ }
+ 
++INT	Set_VLANID_Proc(
++	IN	PRTMP_ADAPTER	pAd,
++	IN	RTMP_STRING *arg)
++{
++	INT ret;
++#ifdef CONFIG_MTK_AP_BRIDGE
++	if (!mtk_ap_config_enter(pAd, NULL))
++		return FALSE;
++#endif
++	ret = mtk_guarded_Set_VLANID_Proc(pAd, arg);
++#ifdef CONFIG_MTK_AP_BRIDGE
++	mtk_ap_config_exit(pAd);
++#endif
++	return ret;
++}
++
+ /*
+     ==========================================================================
+     Description:
+@@ -14324,7 +14386,7 @@
+ 	TRUE if all parameters are OK, FALSE otherwise
+     ==========================================================================
+ */
+-INT	Set_VLANPriority_Proc(RTMP_ADAPTER *pAd, RTMP_STRING *arg)
++static INT	mtk_guarded_Set_VLANPriority_Proc(RTMP_ADAPTER *pAd, RTMP_STRING *arg)
+ {
+ 	POS_COOKIE pObj = (POS_COOKIE) pAd->OS_Cookie;
+ 	struct wifi_dev *wdev = NULL;
+@@ -14372,6 +14434,20 @@
+ 	return TRUE;
+ }
+ 
++INT	Set_VLANPriority_Proc(RTMP_ADAPTER *pAd, RTMP_STRING *arg)
++{
++	INT ret;
++#ifdef CONFIG_MTK_AP_BRIDGE
++	if (!mtk_ap_config_enter(pAd, NULL))
++		return FALSE;
++#endif
++	ret = mtk_guarded_Set_VLANPriority_Proc(pAd, arg);
++#ifdef CONFIG_MTK_AP_BRIDGE
++	mtk_ap_config_exit(pAd);
++#endif
++	return ret;
++}
++
+ /*
+     ==========================================================================
+     Description:
+@@ -14380,7 +14456,7 @@
+ 	TRUE if all parameters are OK, FALSE otherwise
+     ==========================================================================
+ */
+-INT	Set_VLAN_TAG_Proc(RTMP_ADAPTER *pAd, RTMP_STRING *arg)
++static INT	mtk_guarded_Set_VLAN_TAG_Proc(RTMP_ADAPTER *pAd, RTMP_STRING *arg)
+ {
+ 	POS_COOKIE pObj = (POS_COOKIE) pAd->OS_Cookie;
+ 	struct wifi_dev *wdev = NULL;
+@@ -14426,6 +14502,20 @@
+ 	return TRUE;
+ }
+ 
++INT	Set_VLAN_TAG_Proc(RTMP_ADAPTER *pAd, RTMP_STRING *arg)
++{
++	INT ret;
++#ifdef CONFIG_MTK_AP_BRIDGE
++	if (!mtk_ap_config_enter(pAd, NULL))
++		return FALSE;
++#endif
++	ret = mtk_guarded_Set_VLAN_TAG_Proc(pAd, arg);
++#ifdef CONFIG_MTK_AP_BRIDGE
++	mtk_ap_config_exit(pAd);
++#endif
++	return ret;
++}
++
+ /*
+     ==========================================================================
+     Description:
+@@ -14435,7 +14525,7 @@
+ 	TRUE if all parameters are OK, FALSE otherwise
+     ==========================================================================
+ */
+-INT Set_VLAN_Policy_Proc(RTMP_ADAPTER *pAd, RTMP_STRING *arg)
++static INT mtk_guarded_Set_VLAN_Policy_Proc(RTMP_ADAPTER *pAd, RTMP_STRING *arg)
+ {
+ 	POS_COOKIE pObj = (POS_COOKIE) pAd->OS_Cookie;
+ 	struct wifi_dev *wdev = NULL;
+@@ -14531,6 +14621,20 @@
+ 
+ 	}
+ 	return TRUE;
++}
++
++INT Set_VLAN_Policy_Proc(RTMP_ADAPTER *pAd, RTMP_STRING *arg)
++{
++	INT ret;
++#ifdef CONFIG_MTK_AP_BRIDGE
++	if (!mtk_ap_config_enter(pAd, NULL))
++		return FALSE;
++#endif
++	ret = mtk_guarded_Set_VLAN_Policy_Proc(pAd, arg);
++#ifdef CONFIG_MTK_AP_BRIDGE
++	mtk_ap_config_exit(pAd);
++#endif
++	return ret;
+ }
+ 
+ /*
+@@ -27650,7 +27754,7 @@
+ #endif /* DHCP_UC_SUPPORT */
+ 
+ #if defined(MBSS_AS_WDS_AP_SUPPORT) || defined(APCLI_AS_WDS_STA_SUPPORT)
+-INT Set_Wds_Proc(
++static INT mtk_guarded_Set_Wds_Proc(
+ 	IN	PRTMP_ADAPTER	pAd,
+ 	IN	RTMP_STRING *arg)
+ {
+@@ -27714,6 +27818,22 @@
+ 		MTWF_PRINT("WDS AP 4 Address Mode set to  %d for Mbss %d \n", wds_enable, apidx);
+ 	}
+ 	return TRUE;
++}
++
++INT Set_Wds_Proc(
++	IN	PRTMP_ADAPTER	pAd,
++	IN	RTMP_STRING *arg)
++{
++	INT ret;
++#ifdef CONFIG_MTK_AP_BRIDGE
++	if (!mtk_ap_config_enter(pAd, NULL))
++		return FALSE;
++#endif
++	ret = mtk_guarded_Set_Wds_Proc(pAd, arg);
++#ifdef CONFIG_MTK_AP_BRIDGE
++	mtk_ap_config_exit(pAd);
++#endif
++	return ret;
+ }
+ #endif
+ 
+@@ -28479,6 +28599,10 @@
+ #ifdef DYNAMIC_VLAN_SUPPORT
+ INT Set_Sta_Vlan(RTMP_ADAPTER *pAd, RT_CMD_AP_STA_VLAN *sta_vlan)
+ {
++#ifdef CONFIG_MTK_AP_BRIDGE
++	/* Per-STA domain/GTK separation is not an enabled product capability. */
++	return NDIS_STATUS_FAILURE;
++#else
+ 	INT Status = NDIS_STATUS_SUCCESS;
+ 	MAC_TABLE_ENTRY *pEntry;
+ 
+@@ -28494,11 +28618,15 @@
+ 		Status = NDIS_STATUS_FAILURE;
+ 
+ 	return Status;
++#endif
+ }
+ INT Set_Dvlan_Proc(
+ 	IN	PRTMP_ADAPTER	pAd,
+ 	IN	RTMP_STRING *arg)
+ {
++#ifdef CONFIG_MTK_AP_BRIDGE
++	return FALSE;
++#else
+ 	UINT8 vlan_id;
+ 	MAC_TABLE_ENTRY *pEntry;
+ 	MAC_TABLE *pMacTable = &pAd->MacTab;
+@@ -28509,6 +28637,7 @@
+ 	pEntry->vlan_id = vlan_id;
+ 	printk("wcid 1 configured for vlan id %d\n", vlan_id);
+ 	return TRUE;
++#endif
+ }
+ #endif
+ 
+@@ -28561,7 +28690,7 @@
+  *
+  * This API is used to enabled/disable MAP R2 feature in WLAN driver.
+  **/
+-INT Set_MapR2_Proc(
++static INT mtk_guarded_Set_MapR2_Proc(
+ 	PRTMP_ADAPTER pAd,
+ 	char *arg)
+ {
+@@ -28581,6 +28710,22 @@
+ 	MTWF_PRINT("%s: MAP R2 is %s\n", __func__, pAd->bMapR2Enable?"enabled":"disabled");
+ 
+ 	return TRUE;
++}
++
++INT Set_MapR2_Proc(
++	PRTMP_ADAPTER pAd,
++	char *arg)
++{
++	INT ret;
++#ifdef CONFIG_MTK_AP_BRIDGE
++	if (!mtk_ap_config_enter(pAd, NULL))
++		return FALSE;
++#endif
++	ret = mtk_guarded_Set_MapR2_Proc(pAd, arg);
++#ifdef CONFIG_MTK_AP_BRIDGE
++	mtk_ap_config_exit(pAd);
++#endif
++	return ret;
+ }
+ #endif
+ 
+@@ -28590,7 +28735,7 @@
+  *
+  * This API is used to enabled/disable MAP R3 feature in WLAN driver.
+  **/
+-INT Set_MapR3_Proc(
++static INT mtk_guarded_Set_MapR3_Proc(
+ 	PRTMP_ADAPTER pAd,
+ 	char *arg)
+ {
+@@ -28652,6 +28797,22 @@
+ 
+ 	return TRUE;
+ }
++
++INT Set_MapR3_Proc(
++	PRTMP_ADAPTER pAd,
++	char *arg)
++{
++	INT ret;
++#ifdef CONFIG_MTK_AP_BRIDGE
++	if (!mtk_ap_config_enter(pAd, NULL))
++		return FALSE;
++#endif
++	ret = mtk_guarded_Set_MapR3_Proc(pAd, arg);
++#ifdef CONFIG_MTK_AP_BRIDGE
++	mtk_ap_config_exit(pAd);
++#endif
++	return ret;
++}
+ #endif
+ 
+ #ifdef MAP_R4
+@@ -28660,7 +28821,7 @@
+  *
+  * This API is used to enabled/disable MAP R3 feature in WLAN driver.
+  **/
+-INT Set_MapR4_Proc(
++static INT mtk_guarded_Set_MapR4_Proc(
+ 	PRTMP_ADAPTER pAd,
+ 	char *arg)
+ {
+@@ -28696,10 +28857,26 @@
+ 
+ 	return TRUE;
+ }
++
++INT Set_MapR4_Proc(
++	PRTMP_ADAPTER pAd,
++	char *arg)
++{
++	INT ret;
++#ifdef CONFIG_MTK_AP_BRIDGE
++	if (!mtk_ap_config_enter(pAd, NULL))
++		return FALSE;
++#endif
++	ret = mtk_guarded_Set_MapR4_Proc(pAd, arg);
++#ifdef CONFIG_MTK_AP_BRIDGE
++	mtk_ap_config_exit(pAd);
++#endif
++	return ret;
++}
+ #endif /* MAP_R4 */
+ 
+ 
+-INT Set_Bh_Bss_Proc(
++static INT mtk_guarded_Set_Bh_Bss_Proc(
+ 	PRTMP_ADAPTER pAd,
+ 	char *arg)
+ {
+@@ -28730,7 +28907,23 @@
+ 	return TRUE;
+ }
+ 
+-INT Set_Fh_Bss_Proc(
++INT Set_Bh_Bss_Proc(
++	PRTMP_ADAPTER pAd,
++	char *arg)
++{
++	INT ret;
++#ifdef CONFIG_MTK_AP_BRIDGE
++	if (!mtk_ap_config_enter(pAd, NULL))
++		return FALSE;
++#endif
++	ret = mtk_guarded_Set_Bh_Bss_Proc(pAd, arg);
++#ifdef CONFIG_MTK_AP_BRIDGE
++	mtk_ap_config_exit(pAd);
++#endif
++	return ret;
++}
++
++static INT mtk_guarded_Set_Fh_Bss_Proc(
+ 	PRTMP_ADAPTER pAd,
+ 	char *arg)
+ {
+@@ -28764,6 +28957,22 @@
+ 
+ 	return TRUE;
+ }
++
++INT Set_Fh_Bss_Proc(
++	PRTMP_ADAPTER pAd,
++	char *arg)
++{
++	INT ret;
++#ifdef CONFIG_MTK_AP_BRIDGE
++	if (!mtk_ap_config_enter(pAd, NULL))
++		return FALSE;
++#endif
++	ret = mtk_guarded_Set_Fh_Bss_Proc(pAd, arg);
++#ifdef CONFIG_MTK_AP_BRIDGE
++	mtk_ap_config_exit(pAd);
++#endif
++	return ret;
++}
+ /**
+  * reset_mtk_map_vendor_ie: Function to clear MAP vendor IE in beacons
+  *
+@@ -28784,7 +28993,7 @@
+  * Upper layer should take care of killing deamons before disabling
+  * and configuring MAP settings after enabling
+  **/
+-INT Set_Map_Proc(
++static INT mtk_guarded_Set_Map_Proc(
+ 	PRTMP_ADAPTER pAd,
+ 	char *arg)
+ {
+@@ -28865,6 +29074,22 @@
+ 		MTWF_PRINT("%s: disabled MAP", __func__);
+ 	}
+ 	return TRUE;
++}
++
++INT Set_Map_Proc(
++	PRTMP_ADAPTER pAd,
++	char *arg)
++{
++	INT ret;
++#ifdef CONFIG_MTK_AP_BRIDGE
++	if (!mtk_ap_config_enter(pAd, NULL))
++		return FALSE;
++#endif
++	ret = mtk_guarded_Set_Map_Proc(pAd, arg);
++#ifdef CONFIG_MTK_AP_BRIDGE
++	mtk_ap_config_exit(pAd);
++#endif
++	return ret;
+ }
+ 
+ 
+@@ -30292,7 +30517,7 @@
+ }
+ #endif
+ #ifdef VLAN_SUPPORT
+-INT Set_Vlan2eth_Proc(
++static INT mtk_guarded_Set_Vlan2eth_Proc(
+ 	IN	PRTMP_ADAPTER	pAd,
+ 	IN	char *arg)
+ {
+@@ -30305,6 +30530,22 @@
+ 	} else
+ 		MTWF_PRINT("%s():Parameter is not valid.\n", __func__);
+ 	return TRUE;
++}
++
++INT Set_Vlan2eth_Proc(
++	IN	PRTMP_ADAPTER	pAd,
++	IN	char *arg)
++{
++	INT ret;
++#ifdef CONFIG_MTK_AP_BRIDGE
++	if (!mtk_ap_config_enter(pAd, NULL))
++		return FALSE;
++#endif
++	ret = mtk_guarded_Set_Vlan2eth_Proc(pAd, arg);
++#ifdef CONFIG_MTK_AP_BRIDGE
++	mtk_ap_config_exit(pAd);
++#endif
++	return ret;
+ }
+ #endif
+ 
+--- a/mt_wifi/embedded/ap/ap_data.c
++++ b/mt_wifi/embedded/ap/ap_data.c
+@@ -339,7 +339,12 @@
+ 		}
+ #endif
+ 	} else {
++#ifdef CONFIG_MTK_AP_BRIDGE
++		entry = mtk_ap_plain_ap(wdev) ? MacTableLookup2(pAd, pkt_va, wdev) :
++			MacTableLookup(pAd, pkt_va);
++#else
+ 		entry = MacTableLookup(pAd, pkt_va);
++#endif
+ 
+ 		if (entry && (entry->Sst == SST_ASSOC)) {
+ #ifdef WH_EVENT_NOTIFIER
+@@ -530,6 +535,11 @@
+ #ifdef SW_CONNECT_SUPPORT
+ 	tr_entry->tx_fp_allow_cnt++;
+ #endif /* SW_CONNECT_SUPPORT */
++
++#ifdef CONFIG_MTK_AP_BRIDGE
++	if (!mtk_ap_tx_queued_valid(pAd, wdev, pkt))
++		return FALSE;
++#endif
+ 
+ 	return TRUE;
+ }
+@@ -577,7 +587,12 @@
+ 
+ 		wcid = wdev->tr_tb_idx;
+ 	} else {
++#ifdef CONFIG_MTK_AP_BRIDGE
++		entry = mtk_ap_plain_ap(wdev) ? MacTableLookup2(pAd, pkt_va, wdev) :
++			MacTableLookup(pAd, pkt_va);
++#else
+ 		entry = MacTableLookup(pAd, pkt_va);
++#endif
+ 
+ 		if (entry && (entry->Sst == SST_ASSOC)) {
+ #ifdef WH_EVENT_NOTIFIER
+@@ -714,6 +729,10 @@
+ 		RTMP_SET_PACKET_OPMODE(pkt, OPMODE_AP);
+ 
+ #endif /* CFG80211_SUPPORT */
++#ifdef CONFIG_MTK_AP_BRIDGE
++	if (!mtk_ap_tx_queued_valid(pAd, wdev, pkt))
++		return FALSE;
++#endif
+ 	return TRUE;
+ }
+ 
+@@ -730,7 +749,12 @@
+ 	if ((wdev->wdev_type == WDEV_TYPE_AP) && MAC_ADDR_IS_GROUP(addr1)) {
+ 		mac_entry = &pAd->MacTab.Content[wdev->tr_tb_idx];
+ 	} else {
++#ifdef CONFIG_MTK_AP_BRIDGE
++		mac_entry = mtk_ap_plain_ap(wdev) ? MacTableLookup2(pAd, addr1, wdev) :
++			MacTableLookup(pAd, addr1);
++#else
+ 		mac_entry = MacTableLookup(pAd, addr1);
++#endif
+ 	}
+ 
+ #ifdef MAC_REPEATER_SUPPORT
+@@ -809,7 +833,13 @@
+ 	}
+ 
+ 	/*Mgmt frame which is not in TX_ALTX cannot send when entry&starc is not valid*/
++#ifdef CONFIG_MTK_AP_BRIDGE
++	pEntry = mtk_ap_plain_ap(wdev) ?
++		MacTableLookup2(pAd, pHeader_802_11->Addr1, wdev) :
++		MacTableLookup(pAd, pHeader_802_11->Addr1);
++#else
+ 	pEntry = MacTableLookup(pAd, pHeader_802_11->Addr1);
++#endif
+ 	if ((!pEntry  || !(pEntry->sta_rec_valid)) && (RTMP_GET_PACKET_TYPE(pkt) != TX_ALTX)) {
+ 		MTWF_DBG(pAd, DBG_CAT_AP, DBG_CAT_PS, DBG_LVL_ERROR,
+ 			"pkt from non-connected sta, type=%d, sub_type=%d to ACQ, drop\n",
+@@ -902,7 +932,11 @@
+ 		wdev_ops->detect_wmm_traffic(pAd, wdev, user_prio, FLG_IS_OUTPUT);
+ 	else {
+ #ifdef IGMP_SNOOP_SUPPORT
+-		if (wdev->IgmpSnoopEnable) {
++		if (wdev->IgmpSnoopEnable
++#ifdef CONFIG_MTK_AP_BRIDGE
++		    && !mtk_ap_plain_ap(wdev)
++#endif
++		) {
+ 			if (IgmpPktInfoQuery(pAd, pkt_va, pkt, wdev,
+ 						&InIgmpGroup, &pGroupEntry) != NDIS_STATUS_SUCCESS) {
+ 				RELEASE_NDIS_PACKET(pAd, pkt, NDIS_STATUS_FAILURE);
+@@ -3281,7 +3315,7 @@
+ 	return NDIS_STATUS_SUCCESS;
+ }
+ 
+-INT ap_tx_pkt_handle(RTMP_ADAPTER *pAd, struct wifi_dev *wdev, TX_BLK *tx_blk)
++static INT ap_tx_pkt_handle_legacy(RTMP_ADAPTER *pAd, struct wifi_dev *wdev, TX_BLK *tx_blk)
+ {
+ 	PQUEUE_ENTRY pQEntry;
+ 	PNDIS_PACKET pPacket = NULL;
+@@ -3449,6 +3483,45 @@
+ 
+ end:
+ 	return ret;
++}
++
++INT ap_tx_pkt_handle(RTMP_ADAPTER *pAd, struct wifi_dev *wdev, TX_BLK *tx_blk)
++{
++#ifdef CONFIG_MTK_AP_BRIDGE
++	struct mtk_ap_bridge_reader reader = { 0 };
++	PQUEUE_ENTRY q;
++	INT ret;
++	bool valid = mtk_ap_tx_enter_queued(pAd, wdev, tx_blk->pPacket, &reader);
++	if (valid)
++		valid = mtk_ap_tx_valid(pAd, wdev, tx_blk->pPacket, &reader);
++	if (!wdev || (valid && reader.gate &&
++	    (!IS_TR_WCID_VALID(pAd, RTMP_GET_PACKET_WCID(tx_blk->pPacket)) ||
++	     tx_blk->tr_entry != &pAd->tr_ctl.tr_entry[RTMP_GET_PACKET_WCID(tx_blk->pPacket)])))
++		valid = false;
++	/* Every MSDU in software/hardware aggregation is checked while DA is
++	 * still Ethernet. The reader spans construction and hardware submission.
++	 */
++	for (q = tx_blk->TxPacketList.Head; valid && q; q = q->Next)
++		valid = mtk_ap_tx_valid(pAd, wdev, QUEUE_ENTRY_TO_PACKET(q), &reader);
++	if (!valid) {
++		if (tx_blk->TxPacketList.Head) {
++			while (tx_blk->TxPacketList.Head) {
++				q = RemoveHeadQueue(&tx_blk->TxPacketList);
++				RELEASE_NDIS_PACKET(pAd, QUEUE_ENTRY_TO_PACKET(q), NDIS_STATUS_FAILURE);
++			}
++		} else {
++			RELEASE_NDIS_PACKET(pAd, tx_blk->pPacket, NDIS_STATUS_FAILURE);
++		}
++		pAd->tr_ctl.tr_cnt.tx_not_allowed_drop++;
++		mtk_ap_bridge_exit(&reader);
++		return NDIS_STATUS_FAILURE;
++	}
++	ret = ap_tx_pkt_handle_legacy(pAd, wdev, tx_blk);
++	mtk_ap_bridge_exit(&reader);
++	return ret;
++#else
++	return ap_tx_pkt_handle_legacy(pAd, wdev, tx_blk);
++#endif
+ }
+ 
+ /*
+@@ -3757,7 +3830,7 @@
+ 					wapp_handle_sta_disassoc(pAd, pMovedEntry->wcid, REASON_DEAUTH_STA_LEAVING);
+ #endif
+ #ifdef WHNAT_SUPPORT
+-#ifdef CONFIG_FAST_NAT_SUPPORT
++#if defined(CONFIG_FAST_NAT_SUPPORT) && !defined(CONFIG_MTK_AP_BRIDGE)
+ 				if (pAd->CommonCfg.whnat_en && ppe_del_entry_by_mac)
+ 					ppe_del_entry_by_mac(pMovedEntry->Addr);
+ #endif
+@@ -4046,6 +4119,9 @@
+ 	INT Ret;
+ #endif /* A4_CONN */
+ 	PHEADER_802_3 pHDR = NULL;
++#ifdef CONFIG_MTK_AP_BRIDGE
++	MTK_AP_SCOPED_READER(tx_reader);
++#endif
+ 
+ 	if (!VALID_MBSS(pAd, wdev->func_idx)) {
+ 		MTWF_DBG(pAd, DBG_CAT_AP, DBG_SUBCAT_ALL, DBG_LVL_ERROR, "Invalid func_idx(%d), type(%d)!\n",
+@@ -4054,6 +4130,20 @@
+ 	}
+ 
+ 	/* only one connected sta, directly to upper layer */
++#ifdef CONFIG_MTK_AP_BRIDGE
++	if (mtk_ap_plain_ap(wdev)) {
++		struct mtk_ap_bridge_info info;
++		int ret;
++		rcu_read_lock();
++		ret = mtk_ap_bridge_resolve_rcu(wdev->ap_bridge_gate, wdev->if_dev,
++					       RTPKT_TO_OSPKT(pPacket), &info);
++		rcu_read_unlock();
++		if (ret < 0)
++			return FALSE;
++		if (info.bridged)
++			return TRUE;
++	}
++#endif
+ 	if (pAd->MacTab.Size <= 1)
+ 		return TRUE;
+ 
+@@ -4233,6 +4323,13 @@
+ 		}
+ 
+ 		RTMP_SET_PACKET_MOREDATA(pForwardPacket, FALSE);
++#ifdef CONFIG_MTK_AP_BRIDGE
++		/* Standalone legacy cloning can feed the ACK cache before send_data. */
++		if (!mtk_ap_tx_begin(pAd, wdev, pForwardPacket, &tx_reader, false)) {
++			RELEASE_NDIS_PACKET(pAd, pForwardPacket, NDIS_STATUS_FAILURE);
++			return to_os;
++		}
++#endif
+ #ifdef RT_CFG80211_P2P_SUPPORT
+ 		RTMP_SET_PACKET_OPMODE(pForwardPacket, OPMODE_AP);
+ #endif /* RT_CFG80211_P2P_SUPPORT */
+@@ -4445,6 +4542,10 @@
+ 	}
+ 
+ 	if ((pRxBlk->FN == 0) && (pFmeCtrl->MoreFrag != 0)) {
++#ifdef CONFIG_MTK_AP_BRIDGE
++		if (!mtk_ap_rx_fragment_prepare(pAd, pEntry, pRxBlk, wdev))
++			return FALSE;
++#endif
+ 		bFragment = TRUE;
+ 		de_fragment_data_pkt(pAd, pRxBlk);
+ 	}
+@@ -4455,6 +4556,9 @@
+ #ifdef IGMP_SNOOP_SUPPORT
+ 	if ((IS_ENTRY_CLIENT(pEntry) || IS_ENTRY_WDS(pEntry))
+ 		&& (wdev->IgmpSnoopEnable)
++#ifdef CONFIG_MTK_AP_BRIDGE
++		&& !mtk_ap_plain_ap(wdev)
++#endif
+ 		&& IS_MULTICAST_MAC_ADDR(pRxBlk->Addr3)) {
+ 		PUCHAR pDA = pRxBlk->Addr3;
+ 		PUCHAR pSA = pRxBlk->Addr2;
+@@ -4910,6 +5014,10 @@
+ 	pEntry->freqOffsetValid = TRUE;
+ 
+ 	if ((pRxBlk->FN != 0) || (pFmeCtrl->MoreFrag != 0)) {
++#ifdef CONFIG_MTK_AP_BRIDGE
++		if (!mtk_ap_rx_fragment_prepare(pAd, pEntry, pRxBlk, wdev))
++			return FALSE;
++#endif
+ 		bFragment = TRUE;
+ 		de_fragment_data_pkt(pAd, pRxBlk);
+ 	}
+@@ -4958,6 +5066,9 @@
+ 
+ 		if ((IS_ENTRY_CLIENT(pEntry) || IS_ENTRY_WDS(pEntry))
+ 			&& (wdev->IgmpSnoopEnable)
++#ifdef CONFIG_MTK_AP_BRIDGE
++			&& !mtk_ap_plain_ap(wdev)
++#endif
+ 			&& IS_MULTICAST_MAC_ADDR(pRxBlk->Addr3)) {
+ 			PUCHAR pDA = pRxBlk->Addr3;
+ 			PUCHAR pSA = pRxBlk->Addr2;
+--- a/mt_wifi/embedded/common/a4_conn.c
++++ b/mt_wifi/embedded/common/a4_conn.c
+@@ -395,7 +395,7 @@
+ 			if (proxy_wcid != wcid) {
+ #ifdef WHNAT_SUPPORT
+ 				if (adapter->CommonCfg.whnat_en) {
+-#ifdef CONFIG_FAST_NAT_SUPPORT
++#if defined(CONFIG_FAST_NAT_SUPPORT) && !defined(CONFIG_MTK_AP_BRIDGE)
+ 					/* In WARP enabled scenario, the old PPE entry need to be
+ 					deleted when the STA is roaming from one agent to another.
+ 					*/
+--- /dev/null
++++ b/mt_wifi/embedded/common/ap_bridge.c
+@@ -0,0 +1,594 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++#include "rt_config.h"
++#include <linux/mtk_cpu_profile.h>
++#include <linux/mutex.h>
++#include <linux/capability.h>
++#include <linux/netfilter.h>
++#include <linux/netfilter_bridge.h>
++#include <linux/if_vlan.h>
++#include <linux/rtnetlink.h>
++#include <linux/slab.h>
++#include <net/net_namespace.h>
++
++struct mtk_ap_adapter {
++	struct mutex config;
++	struct net *net;
++	struct nf_hook_ops hooks[2];
++	bool stopping;
++};
++
++bool mtk_ap_plain_ap(const struct wifi_dev *wdev)
++{
++	return wdev && wdev->wdev_type == WDEV_TYPE_AP;
++}
++
++static bool mtk_ap_role_supported(RTMP_ADAPTER *ad, struct wifi_dev *wdev)
++{
++	if (!mtk_ap_plain_ap(wdev) || !wdev->ap_bridge_gate ||
++	    !VALID_MBSS(ad, wdev->func_idx) ||
++	    wdev != &ad->ApCfg.MBSSID[wdev->func_idx].wdev)
++		return false;
++#ifdef MWDS
++	if (wdev->bSupportMWDS)
++		return false;
++#endif
++#ifdef CONFIG_MAP_SUPPORT
++	if (wdev->MAPCfg.DevOwnRole & BIT(MAP_ROLE_BACKHAUL_BSS))
++		return false;
++#endif
++#ifdef MAP_TS_TRAFFIC_SUPPORT
++	if (ad->bTSEnable)
++		return false;
++#endif
++#ifdef DYNAMIC_VLAN_SUPPORT
++	if (!ad->CommonCfg.bDynamicVlanDisabled)
++		return false;
++#endif
++#ifdef MBSS_AS_WDS_AP_SUPPORT
++	if (wdev->wds_enable)
++		return false;
++#endif
++#ifdef CONFIG_VLAN_GTK_SUPPORT
++	if (!list_empty(&wdev->vlan_gtk_list))
++		return false;
++#endif
++	return true;
++}
++
++/* WdevListLock protects membership and each gate pointer. The callback never
++ * retains a wdev, acquires RTNL, or looks up a destination wireless station.
++ */
++static int mtk_ap_match_locked(RTMP_ADAPTER *ad, const struct net_device *dev,
++			       const struct sk_buff *skb, bool ingress,
++			       unsigned int *bss, u32 *policy)
++{
++	unsigned int i;
++	if (!dev)
++		return 0;
++	for (i = 0; i < WDEV_NUM_MAX; i++) {
++		struct wifi_dev *wdev = ad->wdev_list[i];
++		struct mtk_ap_bridge_info info;
++		struct mtk_ap_bridge_reader reader = { 0 };
++		int ret;
++		if (!mtk_ap_plain_ap(wdev) || !wdev->ap_bridge_gate)
++			continue;
++		ret = mtk_ap_bridge_match_rcu(wdev->ap_bridge_gate, dev, skb, &info);
++		if (!ret)
++			continue;
++		if (ret < 0 || !mtk_ap_bridge_enter(wdev->ap_bridge_gate, &reader))
++			return -1;
++		if (ingress && !mtk_ap_bridge_validate(skb, &reader, true))
++			ret = -1;
++		if (!mtk_ap_role_supported(ad, wdev))
++			ret = -1;
++		mtk_ap_bridge_exit(&reader);
++		if (ret < 0)
++			return -1;
++		*bss = wdev->func_idx;
++		*policy = info.policy;
++		return 1;
++	}
++	return 0;
++}
++
++static unsigned int mtk_ap_bridge_hook(void *priv, struct sk_buff *skb,
++				      const struct nf_hook_state *state)
++{
++	RTMP_ADAPTER *ad = priv;
++	unsigned int in_bss = 0, out_bss = 0;
++	u32 in_policy = 0, out_policy = 0;
++	int in, out = 0;
++	bool drop = false;
++
++	rcu_read_lock();
++	NdisAcquireSpinLock(&ad->WdevListLock);
++	in = mtk_ap_match_locked(ad, state->in, skb, true, &in_bss, &in_policy);
++	if (in < 0)
++		drop = true;
++	if (state->hook == NF_BR_FORWARD) {
++		out = mtk_ap_match_locked(ad, state->out, skb, false,
++					 &out_bss, &out_policy);
++		drop |= apbr_isolation_denies(in, out, in_bss == out_bss,
++			in_policy & MTK_AP_BRIDGE_NO_FORWARDING,
++			(in_policy | out_policy) & MTK_AP_BRIDGE_NO_FORWARDING_BTNBSSID);
++	}
++	NdisReleaseSpinLock(&ad->WdevListLock);
++	rcu_read_unlock();
++	return drop ? NF_DROP : NF_ACCEPT;
++}
++
++int mtk_ap_adapter_init(RTMP_ADAPTER *ad, PNET_DEV dev)
++{
++	struct mtk_ap_adapter *ctx;
++	int ret;
++	if (ad->ap_bridge)
++		return 0;
++	ctx = kzalloc(sizeof(*ctx), GFP_KERNEL);
++	if (!ctx)
++		return -ENOMEM;
++	mutex_init(&ctx->config);
++	ctx->net = get_net(dev_net(dev));
++	ctx->hooks[0].hook = mtk_ap_bridge_hook;
++	ctx->hooks[0].priv = ad;
++	ctx->hooks[0].pf = NFPROTO_BRIDGE;
++	ctx->hooks[0].hooknum = NF_BR_PRE_ROUTING;
++	ctx->hooks[0].priority = NF_BR_PRI_FIRST;
++	ctx->hooks[1] = ctx->hooks[0];
++	ctx->hooks[1].hooknum = NF_BR_FORWARD;
++	ret = nf_register_net_hook(ctx->net, &ctx->hooks[0]);
++	if (ret)
++		goto free;
++	ret = nf_register_net_hook(ctx->net, &ctx->hooks[1]);
++	if (ret) {
++		nf_unregister_net_hook(ctx->net, &ctx->hooks[0]);
++		synchronize_net();
++		goto free;
++	}
++	WRITE_ONCE(ad->ap_bridge, ctx);
++	return 0;
++free:
++	put_net(ctx->net);
++	kfree(ctx);
++	return ret;
++}
++
++/* Process-context callers have stopped wdev create/delete before adapter
++ * teardown/SER. Never sleep while holding WdevListLock or an RX reader.
++ */
++static void mtk_ap_drain_all(RTMP_ADAPTER *ad, bool profile_only)
++{
++	unsigned int i;
++	for (i = 0; i < WDEV_NUM_MAX; i++) {
++		struct wifi_dev *wdev = ad->wdev_list[i];
++		if (!wdev || !wdev->ap_bridge_gate)
++			continue;
++		if (profile_only)
++			mtk_ap_bridge_profile_drain(wdev->ap_bridge_gate);
++		else
++			mtk_ap_bridge_block(wdev->ap_bridge_gate);
++	}
++}
++
++void mtk_ap_adapter_block(RTMP_ADAPTER *ad)
++{
++	struct mtk_ap_adapter *ctx = READ_ONCE(ad->ap_bridge);
++	if (!ctx)
++		return;
++	mutex_lock(&ctx->config);
++	mtk_ap_drain_all(ad, false);
++	mutex_unlock(&ctx->config);
++}
++
++void mtk_ap_adapter_ser_drain(RTMP_ADAPTER *ad)
++{
++	struct mtk_ap_adapter *ctx = READ_ONCE(ad->ap_bridge);
++	if (!ctx)
++		return;
++	mutex_lock(&ctx->config);
++	mtk_ap_drain_all(ad, true);
++	mutex_unlock(&ctx->config);
++}
++
++void mtk_ap_adapter_exit(RTMP_ADAPTER *ad)
++{
++	struct mtk_ap_adapter *ctx = READ_ONCE(ad->ap_bridge);
++	unsigned int i;
++	if (!ctx)
++		return;
++	mutex_lock(&ctx->config);
++	ctx->stopping = true;
++	mtk_ap_drain_all(ad, false);
++	/* All driver entry points and wdev create/delete are stopped. This also
++	 * covers a main wdev whose OS attach failed before normal deinit ran.
++	 * Its netdev is still alive: the caller must exit before free_netdev.
++	 */
++	for (i = 0; i < WDEV_NUM_MAX; i++) {
++		struct wifi_dev *wdev;
++		struct mtk_ap_bridge_gate *gate = NULL;
++		NdisAcquireSpinLock(&ad->WdevListLock);
++		wdev = ad->wdev_list[i];
++		if (wdev) {
++			gate = wdev->ap_bridge_gate;
++			WRITE_ONCE(wdev->ap_bridge_gate, NULL);
++		}
++		NdisReleaseSpinLock(&ad->WdevListLock);
++		if (gate)
++			mtk_ap_bridge_destroy(gate);
++	}
++	mutex_unlock(&ctx->config);
++	nf_unregister_net_hook(ctx->net, &ctx->hooks[1]);
++	nf_unregister_net_hook(ctx->net, &ctx->hooks[0]);
++	synchronize_net();
++	WRITE_ONCE(ad->ap_bridge, NULL);
++	put_net(ctx->net);
++	kfree(ctx);
++}
++
++int mtk_ap_wdev_init(RTMP_ADAPTER *ad, struct wifi_dev *wdev)
++{
++	struct mtk_ap_bridge_gate *gate;
++	if (!mtk_ap_plain_ap(wdev) || wdev->ap_bridge_gate)
++		return 0;
++	if (!wdev->if_dev)
++		return -ENODEV;
++	gate = mtk_ap_bridge_create(wdev->if_dev);
++	if (IS_ERR(gate))
++		return PTR_ERR(gate);
++	WRITE_ONCE(wdev->ap_bridge_gate, gate);
++	return 0;
++}
++
++void mtk_ap_wdev_exit(RTMP_ADAPTER *ad, struct wifi_dev *wdev)
++{
++	struct mtk_ap_bridge_gate *gate = wdev->ap_bridge_gate;
++	struct mtk_ap_adapter *ctx = READ_ONCE(ad->ap_bridge);
++	if (!gate)
++		return;
++	if (ctx)
++		mutex_lock(&ctx->config);
++	/* Caller has removed wdev from WdevListLock-protected registry. */
++	WRITE_ONCE(wdev->ap_bridge_gate, NULL);
++	mtk_ap_bridge_destroy(gate);
++	if (ctx)
++		mutex_unlock(&ctx->config);
++}
++
++void mtk_ap_wdev_block(RTMP_ADAPTER *ad, struct wifi_dev *wdev)
++{
++	struct mtk_ap_adapter *ctx = READ_ONCE(ad->ap_bridge);
++	if (ctx)
++		mutex_lock(&ctx->config);
++	if (wdev && wdev->ap_bridge_gate)
++		mtk_ap_bridge_block(wdev->ap_bridge_gate);
++	if (ctx)
++		mutex_unlock(&ctx->config);
++}
++
++void mtk_ap_netdev_block(PNET_DEV dev)
++{
++	RTMP_ADAPTER *ad = RTMP_OS_NETDEV_GET_PRIV(dev);
++	struct wifi_dev *wdev = RTMP_OS_NETDEV_GET_WDEV(dev);
++	if (ad && wdev)
++		mtk_ap_wdev_block(ad, wdev);
++}
++
++bool mtk_ap_config_enter(RTMP_ADAPTER *ad, struct wifi_dev *wdev)
++{
++	struct mtk_ap_adapter *ctx = READ_ONCE(ad->ap_bridge);
++	unsigned int i;
++	if (!ctx)
++		return true; /* Before publication, every gate is still BLOCKED. */
++	mutex_lock(&ctx->config);
++	if (ctx->stopping)
++		goto busy;
++	if (wdev) {
++		if (wdev->ap_bridge_gate &&
++		    !mtk_ap_bridge_config_blocked(wdev->ap_bridge_gate))
++			goto busy;
++	} else {
++		for (i = 0; i < WDEV_NUM_MAX; i++) {
++			wdev = ad->wdev_list[i];
++			if (wdev && wdev->ap_bridge_gate &&
++			    !mtk_ap_bridge_config_blocked(wdev->ap_bridge_gate))
++				goto busy;
++		}
++	}
++	return true;
++busy:
++	mutex_unlock(&ctx->config);
++	return false;
++}
++
++void mtk_ap_config_exit(RTMP_ADAPTER *ad)
++{
++	struct mtk_ap_adapter *ctx = READ_ONCE(ad->ap_bridge);
++	if (ctx)
++		mutex_unlock(&ctx->config);
++}
++
++int mtk_ap_private_ioctl(struct net_device *dev, struct ifreq *ifr,
++			 void __user *data, int cmd)
++{
++	RTMP_ADAPTER *ad = RTMP_OS_NETDEV_GET_PRIV(dev);
++	struct wifi_dev *wdev = RTMP_OS_NETDEV_GET_WDEV(dev);
++	struct mtk_ap_bridge_policy policy = { 0 };
++	struct mtk_ap_adapter *ctx;
++	int ret;
++	if (cmd != MTK_AP_BRIDGE_IOCTL)
++		return dev->netdev_ops->ndo_do_ioctl ?
++			dev->netdev_ops->ndo_do_ioctl(dev, ifr, cmd) : -EOPNOTSUPP;
++	ASSERT_RTNL();
++	if (!ad || !mtk_ap_plain_ap(wdev) || !wdev->ap_bridge_gate)
++		return -EOPNOTSUPP;
++	if (!ns_capable(dev_net(dev)->user_ns, CAP_NET_ADMIN))
++		return -EPERM;
++	ctx = READ_ONCE(ad->ap_bridge);
++	if (!ctx || !net_eq(ctx->net, dev_net(dev)))
++		return -ENODEV;
++	mutex_lock(&ctx->config);
++	policy.supported_role = !ctx->stopping && mtk_ap_role_supported(ad, wdev);
++	policy.driver_ready = policy.supported_role &&
++		RTMP_TEST_FLAG(ad, fRTMP_ADAPTER_SYSEM_READY) &&
++		READ_ONCE(wdev->if_up_down_state);
++	if (VALID_MBSS(ad, wdev->func_idx) &&
++	    READ_ONCE(ad->ApCfg.MBSSID[wdev->func_idx].IsolateInterStaTraffic))
++		policy.flags |= MTK_AP_BRIDGE_NO_FORWARDING;
++	if (READ_ONCE(ad->ApCfg.IsolateInterStaTrafficBTNBSSID))
++		policy.flags |= MTK_AP_BRIDGE_NO_FORWARDING_BTNBSSID;
++	ret = mtk_ap_bridge_ioctl(wdev->ap_bridge_gate, data, &policy);
++	mutex_unlock(&ctx->config);
++	return ret;
++}
++
++bool mtk_ap_rx_early_enter(RTMP_ADAPTER *ad, RX_BLK *rx,
++			   struct wifi_dev *wdev)
++{
++	memset(&rx->ap_bridge_reader, 0, sizeof(rx->ap_bridge_reader));
++	if (!mtk_ap_plain_ap(wdev))
++		return true;
++	if (!mtk_ap_bridge_enter(wdev->ap_bridge_gate, &rx->ap_bridge_reader))
++		return false;
++	if (!mtk_ap_role_supported(ad, wdev)) {
++		mtk_ap_bridge_exit(&rx->ap_bridge_reader);
++		return false;
++	}
++	return true;
++}
++
++void mtk_ap_rx_early_exit(RX_BLK *rx)
++{
++	mtk_ap_bridge_exit(&rx->ap_bridge_reader);
++}
++
++bool mtk_ap_rx_late_enter(RTMP_ADAPTER *ad, struct wifi_dev *wdev,
++			 PNDIS_PACKET pkt, struct mtk_ap_bridge_reader *reader)
++{
++	memset(reader, 0, sizeof(*reader));
++	if (!mtk_ap_plain_ap(wdev))
++		return true;
++	if (!mtk_ap_bridge_enter(wdev->ap_bridge_gate, reader))
++		return false;
++	if (!mtk_ap_role_supported(ad, wdev) ||
++	    !mtk_ap_bridge_validate(RTPKT_TO_OSPKT(pkt), reader, true)) {
++		mtk_ap_bridge_exit(reader);
++		return false;
++	}
++	return true;
++}
++
++int mtk_ap_rx_authorize(RTMP_ADAPTER *ad, MAC_TABLE_ENTRY *peer, RX_BLK *rx,
++			struct wifi_dev *wdev, const UCHAR *data,
++			unsigned int length, bool ethernet)
++{
++	struct apbr_wire_view view;
++	enum apbr_wire_kind kind;
++	STA_TR_ENTRY *tr;
++	FRAME_CONTROL *fc = (FRAME_CONTROL *)rx->FC;
++	if (!mtk_ap_plain_ap(wdev))
++		return 0;
++	if (!peer || !VALID_UCAST_ENTRY_WCID(ad, peer->wcid) ||
++	    peer->wdev != wdev || !IS_ENTRY_CLIENT(peer) ||
++	    peer->Sst != SST_ASSOC)
++		return -1;
++	if (!fc || fc->Type != FC_TYPE_DATA || !fc->ToDs || fc->FrDs)
++		return -1;
++#ifdef A4_CONN
++	if (IS_ENTRY_A4(peer))
++		return -1;
++#endif
++	tr = &ad->tr_ctl.tr_entry[peer->wcid];
++	if (tr->wdev != wdev)
++		return -1;
++	/* An aggregate never acquires a whole-frame authentication exception. */
++	if (RX_BLK_TEST_FLAG(rx, fRX_AMSDU) || RX_BLK_TEST_FLAG(rx, fRX_ARALINK)) {
++		kind = APBR_WIRE_DATA;
++	} else {
++		kind = apbr_parse_wire(data, length,
++				       ethernet ? APBR_ETHERNET : APBR_LLC, &view);
++		if (kind == APBR_WIRE_INVALID)
++			return -1;
++	}
++	if (kind == APBR_WIRE_EAPOL) {
++		if (!mtk_ap_bridge_stamp(RTPKT_TO_OSPKT(rx->pRxPacket),
++					 &rx->ap_bridge_reader, true))
++			return -1;
++		return 1;
++	}
++	if (READ_ONCE(tr->PortSecured) != WPA_802_1X_PORT_SECURED ||
++	    READ_ONCE(peer->PrivacyFilter) == Ndis802_11PrivFilter8021xWEP)
++		return -1;
++	if (!mtk_ap_bridge_stamp(RTPKT_TO_OSPKT(rx->pRxPacket),
++				 &rx->ap_bridge_reader, true))
++		return -1;
++	return 0;
++}
++
++bool mtk_ap_rx_fragment_prepare(RTMP_ADAPTER *ad, MAC_TABLE_ENTRY *peer,
++				RX_BLK *rx, struct wifi_dev *wdev)
++{
++	FRAME_CONTROL *fc = (FRAME_CONTROL *)rx->FC;
++	if (!mtk_ap_plain_ap(wdev))
++		return true;
++	/* Fragmented authentication never grants an aggregate-wide exception. */
++	if (!peer || peer->wdev != wdev || !IS_ENTRY_CLIENT(peer) ||
++	    peer->Sst != SST_ASSOC || !VALID_UCAST_ENTRY_WCID(ad, peer->wcid) ||
++	    ad->tr_ctl.tr_entry[peer->wcid].wdev != wdev ||
++	    READ_ONCE(ad->tr_ctl.tr_entry[peer->wcid].PortSecured) !=
++		WPA_802_1X_PORT_SECURED ||
++	    READ_ONCE(peer->PrivacyFilter) == Ndis802_11PrivFilter8021xWEP)
++		return false;
++	if (!fc || fc->Type != FC_TYPE_DATA || !fc->ToDs || fc->FrDs)
++		return false;
++#ifdef A4_CONN
++	if (IS_ENTRY_A4(peer))
++		return false;
++#endif
++	return mtk_ap_bridge_stamp(RTPKT_TO_OSPKT(rx->pRxPacket),
++				  &rx->ap_bridge_reader, true);
++}
++
++/* 0: genuine management/control, 1: payload data, 2: NULL data. */
++static int mtk_ap_raw_class(RTMP_ADAPTER *ad, PNDIS_PACKET pkt, bool force)
++{
++	struct sk_buff *skb = RTPKT_TO_OSPKT(pkt);
++	unsigned int off, fc;
++	if (!force && !RTMP_GET_PACKET_MGMT_PKT(pkt))
++		return 1;
++	off = hc_get_chip_cap(ad->hdev_ctrl)->tx_hw_hdr_len;
++	if (!pskb_may_pull(skb, off + 2))
++		return -1;
++	fc = skb->data[off] | ((unsigned int)skb->data[off + 1] << 8);
++	if ((fc & 0xc) == 4)
++		return pskb_may_pull(skb, off +
++			(((fc & 0xf0) == 0xc0 || (fc & 0xf0) == 0xd0) ? 10 : 16)) ? 0 : -1;
++	if (!pskb_may_pull(skb, off + 24))
++		return -1;
++	if ((fc & 0xc) == 8)
++		return (fc & 0x40) ? 2 : 1;
++	if ((fc & 0xc) == 0)
++		return 0;
++	return -1;
++}
++
++bool mtk_ap_tx_begin(RTMP_ADAPTER *ad, struct wifi_dev *wdev, PNDIS_PACKET pkt,
++		     struct mtk_ap_bridge_reader *reader, bool raw)
++{
++	int type = raw ? mtk_ap_raw_class(ad, pkt, true) : 1;
++	memset(reader, 0, sizeof(*reader));
++	if (!mtk_ap_plain_ap(wdev))
++		return true;
++	if (type < 0)
++		return false;
++	if (!type)
++		return true;
++	if (!mtk_ap_bridge_enter(wdev->ap_bridge_gate, reader))
++		return false;
++	if (!mtk_ap_role_supported(ad, wdev)) {
++		mtk_ap_bridge_exit(reader);
++		return false;
++	}
++	if (raw) {
++		if (type == 2 ? mtk_ap_bridge_stamp(RTPKT_TO_OSPKT(pkt), reader, false) :
++		    mtk_ap_bridge_tx_domain_validate(RTPKT_TO_OSPKT(pkt), reader))
++			return true;
++	} else if (mtk_ap_bridge_tx_domain_stamp(RTPKT_TO_OSPKT(pkt), reader)) {
++		return true;
++	}
++	mtk_ap_bridge_exit(reader);
++	return false;
++}
++
++bool mtk_ap_tx_valid(RTMP_ADAPTER *ad, struct wifi_dev *wdev, PNDIS_PACKET pkt,
++		     const struct mtk_ap_bridge_reader *reader)
++{
++	struct sk_buff *skb = RTPKT_TO_OSPKT(pkt);
++	struct apbr_wire_view view;
++	const UCHAR *da;
++	MAC_TABLE_ENTRY *peer;
++	STA_TR_ENTRY *tr;
++	UINT16 wcid;
++	bool eap = false;
++	bool ordinary, radius_allowed = true;
++	int raw_type;
++	if (!mtk_ap_plain_ap(wdev))
++		return true;
++	if (RTMP_GET_PACKET_WDEV(pkt) != wdev->wdev_idx)
++		return false;
++	raw_type = mtk_ap_raw_class(ad, pkt, false);
++	if (!raw_type)
++		return true;
++	if (raw_type < 0 || !(raw_type == 2 ?
++	    mtk_ap_bridge_validate(skb, reader, false) :
++	    mtk_ap_bridge_tx_domain_validate(skb, reader)))
++		return false;
++	if (!pskb_may_pull(skb, LENGTH_802_3))
++		return false;
++	da = skb->data;
++	if (RTMP_GET_PACKET_MGMT_PKT(pkt)) {
++		unsigned int off = hc_get_chip_cap(ad->hdev_ctrl)->tx_hw_hdr_len;
++		unsigned int fc;
++		if (!pskb_may_pull(skb, off + 24))
++			return false;
++		fc = skb->data[off] | ((unsigned int)skb->data[off + 1] << 8);
++		if ((fc & 0xc) != 8)
++			return true;
++		da = skb->data + off + 4;
++		eap = apbr_parse_wire(skb->data + off, skb->len - off,
++				       APBR_IEEE80211, &view) == APBR_WIRE_EAPOL;
++	} else {
++		enum apbr_wire_kind kind = apbr_parse_wire(skb->data, skb_headlen(skb),
++						      APBR_ETHERNET, &view);
++		if (kind == APBR_WIRE_INVALID)
++			return false;
++		eap = kind == APBR_WIRE_EAPOL;
++	}
++	wcid = RTMP_GET_PACKET_WCID(pkt);
++	if (!IS_WCID_VALID(ad, wcid) || !IS_TR_WCID_VALID(ad, wcid))
++		return false;
++	tr = &ad->tr_ctl.tr_entry[wcid];
++	peer = &ad->MacTab.Content[wcid];
++	ordinary = IS_ENTRY_CLIENT(peer);
++#ifdef A4_CONN
++	if (IS_ENTRY_A4(peer))
++		ordinary = false;
++#endif
++#ifdef RADIUS_MAC_AUTH_SUPPORT
++	if (wdev->radius_mac_auth_enable && !ad->CommonCfg.bRadiusMacAuthDisabled &&
++	    !peer->bAllowTraffic)
++		radius_allowed = false;
++#endif
++	return apbr_tx_binding_matches(da, peer->Addr, wdev, peer->wdev, tr->wdev,
++		wcid, wdev->tr_tb_idx, peer->sta_rec_valid, peer->Sst == SST_ASSOC,
++		ordinary, READ_ONCE(tr->PortSecured) == WPA_802_1X_PORT_SECURED,
++		READ_ONCE(wdev->PortSecured) == WPA_802_1X_PORT_SECURED,
++		raw_type == 2 || eap, radius_allowed);
++}
++
++bool mtk_ap_tx_queued_valid(RTMP_ADAPTER *ad, struct wifi_dev *wdev,
++			    PNDIS_PACKET pkt)
++{
++	struct mtk_ap_bridge_reader reader = { 0 };
++	bool valid;
++	if (!mtk_ap_plain_ap(wdev))
++		return true;
++	if (!mtk_ap_tx_enter_queued(ad, wdev, pkt, &reader))
++		return false;
++	valid = mtk_ap_tx_valid(ad, wdev, pkt, &reader);
++	mtk_ap_bridge_exit(&reader);
++	return valid;
++}
++
++bool mtk_ap_tx_enter_queued(RTMP_ADAPTER *ad, struct wifi_dev *wdev,
++			   PNDIS_PACKET pkt, struct mtk_ap_bridge_reader *reader)
++{
++	memset(reader, 0, sizeof(*reader));
++	if (!mtk_ap_plain_ap(wdev) || mtk_ap_raw_class(ad, pkt, false) == 0)
++		return true;
++	if (!mtk_ap_bridge_enter(wdev->ap_bridge_gate, reader))
++		return false;
++	if (!mtk_ap_role_supported(ad, wdev)) {
++		mtk_ap_bridge_exit(reader);
++		return false;
++	}
++	return true;
++}
+--- a/mt_wifi/embedded/common/cmm_cfg.c
++++ b/mt_wifi/embedded/common/cmm_cfg.c
+@@ -946,7 +946,12 @@
+ 		if (!ret) {
+ 			MTWF_DBG(pAd, DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_ERROR, "Assign wdev idx for %s failed, free net device!\n",
+ 					RTMP_OS_NETDEV_GET_DEVNAME(pAd->net_dev));
++#ifdef CONFIG_MTK_AP_BRIDGE
++			/* The allocating caller owns the netdev, including failure unwind. */
++			pAd->net_dev = NULL;
++#else
+ 			RtmpOSNetDevFree(pAd->net_dev);
++#endif
+ 			return;
+ 		}
+ 
+@@ -956,7 +961,12 @@
+ 		if (!ret) {
+ 			MTWF_DBG(pAd, DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
+ 				 "register wdev_ops %s failed, free net device!\n", RTMP_OS_NETDEV_GET_DEVNAME(pAd->net_dev));
++#ifdef CONFIG_MTK_AP_BRIDGE
++			wdev_deinit(pAd, wdev);
++			pAd->net_dev = NULL;
++#else
+ 			RtmpOSNetDevFree(pAd->net_dev);
++#endif
+ 			return;
+ 		}
+ 	}
+@@ -972,7 +982,11 @@
+ 		if (!ret) {
+ 			MTWF_DBG(pAd, DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_ERROR, "Assign wdev idx for %s failed, free net device!\n",
+ 					RTMP_OS_NETDEV_GET_DEVNAME(pAd->net_dev));
++#ifdef CONFIG_MTK_AP_BRIDGE
++			pAd->net_dev = NULL;
++#else
+ 			RtmpOSNetDevFree(pAd->net_dev);
++#endif
+ 			return;
+ 		}
+ 
+@@ -982,7 +996,12 @@
+ 		if (!ret) {
+ 			MTWF_DBG(pAd, DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
+ 				 "register wdev_ops %s failed, free net device!\n", RTMP_OS_NETDEV_GET_DEVNAME(pAd->net_dev));
++#ifdef CONFIG_MTK_AP_BRIDGE
++			wdev_deinit(pAd, wdev);
++			pAd->net_dev = NULL;
++#else
+ 			RtmpOSNetDevFree(pAd->net_dev);
++#endif
+ 			return;
+ 		}
+ 	}
+@@ -10899,6 +10918,9 @@
+ 
+ INT set_hnat_register(RTMP_ADAPTER *pAd, RTMP_STRING *arg)
+ {
++#ifdef CONFIG_MTK_AP_BRIDGE
++	return FALSE;
++#else
+ 	UINT32 reg_en;
+ 	INT idx;
+ 	struct wifi_dev *wdev;
+@@ -10932,6 +10954,7 @@
+ 	}
+ 
+ 	return TRUE;
++#endif
+ }
+ 
+ INT Set_MibBucket_Proc(RTMP_ADAPTER *pAd, RTMP_STRING *arg)
+--- a/mt_wifi/embedded/common/cmm_data.c
++++ b/mt_wifi/embedded/common/cmm_data.c
+@@ -95,7 +95,16 @@
+ 
+ 	/*For IOT, remove unused fields*/
+ 	if (pRxBlk->pRxPacket) {
++#ifdef CONFIG_MTK_AP_BRIDGE
++		if (GET_OS_PKT_LEN(pRxBlk->pRxPacket) < LENGTH_802_3 ||
++		    pRxBlk->DataSize < 2)
++			return;
++#endif
+ 		extra_field_offset = IS_VLAN_PACKET(GET_OS_PKT_DATAPTR(pRxBlk->pRxPacket)) ? (LENGTH_802_3_NO_TYPE+LENGTH_802_1Q) : LENGTH_802_3_NO_TYPE;
++#ifdef CONFIG_MTK_AP_BRIDGE
++		if (GET_OS_PKT_LEN(pRxBlk->pRxPacket) < extra_field_offset + 2)
++			return;
++#endif
+ 		/*Remove the extra field (2 Bytes) which is added by hardware*/
+ 		/*The added info is the length of actual data (without overhead)*/
+ 		byte0 = GET_OS_PKT_DATAPTR(pRxBlk->pRxPacket)[extra_field_offset];
+@@ -171,6 +180,10 @@
+ 		hdr_len += LENGTH_WMMQOS_H + 6; /*QoS Control & SNAP*/
+ 	else
+ 		hdr_len += 6; /*SNAP*/
++#ifdef CONFIG_MTK_AP_BRIDGE
++	if ((pHhdr80211->FC.SubType & 0x08) && pHhdr80211->FC.Order)
++		hdr_len += 4;
++#endif
+ 
+ 	skb_push(pRxBlk->pRxPacket, hdr_len - LENGTH_802_3_NO_TYPE);
+ 	RtmpOsSkbResetNetworkHeader(pRxBlk->pRxPacket);
+@@ -196,6 +209,10 @@
+ 		*pData = pRxBlk->UserPriority;
+ 		pData += LENGTH_WMMQOS_H;
+ 	}
++#ifdef CONFIG_MTK_AP_BRIDGE
++	if ((pHhdr80211->FC.SubType & 0x08) && pHhdr80211->FC.Order)
++		pData += 4;
++#endif
+ 	NdisMoveMemory(pData, SNAP_802_1H, 6);
+ 	RX_BLK_CLEAR_FLAG(pRxBlk, fRX_HDR_TRANS);
+ 	update_rxblk_addr(pRxBlk);
+@@ -1554,7 +1571,7 @@
+ 	return ret;
+ }
+ 
+-INT send_data_pkt(RTMP_ADAPTER *pAd, struct wifi_dev *wdev, PNDIS_PACKET pkt)
++static INT send_data_pkt_legacy(RTMP_ADAPTER *pAd, struct wifi_dev *wdev, PNDIS_PACKET pkt)
+ {
+ 	INT ret = NDIS_STATUS_SUCCESS;
+ 	BOOLEAN allowed;
+@@ -1613,12 +1630,47 @@
+ 	return ret;
+ }
+ 
+-INT send_mlme_pkt(RTMP_ADAPTER *pAd, PNDIS_PACKET pkt, struct wifi_dev *wdev, UCHAR q_idx, BOOLEAN is_data_queue)
++INT send_data_pkt(RTMP_ADAPTER *pAd, struct wifi_dev *wdev, PNDIS_PACKET pkt)
++{
++	INT ret;
++#ifdef CONFIG_MTK_AP_BRIDGE
++	struct mtk_ap_bridge_reader reader = { 0 };
++	if (!mtk_ap_tx_begin(pAd, wdev, pkt, &reader, false)) {
++		RELEASE_NDIS_PACKET(pAd, pkt, NDIS_STATUS_FAILURE);
++		return NDIS_STATUS_FAILURE;
++	}
++#endif
++	ret = send_data_pkt_legacy(pAd, wdev, pkt);
++#ifdef CONFIG_MTK_AP_BRIDGE
++	mtk_ap_bridge_exit(&reader);
++#endif
++	return ret;
++}
++
++static INT send_mlme_pkt_legacy(RTMP_ADAPTER *pAd, PNDIS_PACKET pkt, struct wifi_dev *wdev, UCHAR q_idx, BOOLEAN is_data_queue)
+ {
+ 	INT ret;
+ 	struct wifi_dev_ops *ops = wdev->wdev_ops;
+ 
+ 	ret = ops->send_mlme_pkt(pAd, pkt, wdev, q_idx, is_data_queue);
++	return ret;
++}
++
++INT send_mlme_pkt(RTMP_ADAPTER *pAd, PNDIS_PACKET pkt, struct wifi_dev *wdev,
++		  UCHAR q_idx, BOOLEAN is_data_queue)
++{
++	INT ret;
++#ifdef CONFIG_MTK_AP_BRIDGE
++	struct mtk_ap_bridge_reader reader = { 0 };
++	if (!mtk_ap_tx_begin(pAd, wdev, pkt, &reader, true)) {
++		RELEASE_NDIS_PACKET(pAd, pkt, NDIS_STATUS_FAILURE);
++		return NDIS_STATUS_FAILURE;
++	}
++#endif
++	ret = send_mlme_pkt_legacy(pAd, pkt, wdev, q_idx, is_data_queue);
++#ifdef CONFIG_MTK_AP_BRIDGE
++	mtk_ap_bridge_exit(&reader);
++#endif
+ 	return ret;
+ }
+ 
+@@ -3364,6 +3416,9 @@
+ 	struct tr_counter *tr_cnt = &pAd->tr_ctl.tr_cnt;
+ 	UCHAR wdev_idx = RTMP_GET_PACKET_WDEV(pPacket);
+ 	UCHAR VLAN_Size;
++#ifdef CONFIG_MTK_AP_BRIDGE
++	MTK_AP_SCOPED_READER(ap_reader);
++#endif
+ #ifdef CONFIG_AP_SUPPORT
+ 	USHORT VLAN_VID = 0;
+ 	USHORT VLAN_Priority = 0;
+@@ -3377,6 +3432,12 @@
+ 	}
+ 
+ 	wdev = pAd->wdev_list[wdev_idx];
++#ifdef CONFIG_MTK_AP_BRIDGE
++	if (!wdev || !mtk_ap_rx_late_enter(pAd, wdev, pPacket, &ap_reader)) {
++		RELEASE_NDIS_PACKET(pAd, pPacket, NDIS_STATUS_FAILURE);
++		return 0;
++	}
++#endif
+ 	/* only MBssid support VLAN.*/
+ 	VLAN_Size = (wdev->VLAN_VID != 0) ? LENGTH_802_1Q : 0;
+ 	nMSDU = 0;
+@@ -3389,7 +3450,11 @@
+ 		PayloadSize = pAMSDUsubheader->Octet[1] + (pAMSDUsubheader->Octet[0] << 8);
+ 		SubFrameSize = PayloadSize + LENGTH_802_3;
+ 
+-		if ((DataSize < SubFrameSize) || (PayloadSize > 1518))
++		if ((DataSize < SubFrameSize) || (PayloadSize > 1518)
++#ifdef CONFIG_MTK_AP_BRIDGE
++		    || PayloadSize < 8
++#endif
++		   )
+ 			break;
+ 
+ 		pPayload = pData + LENGTH_802_3;
+@@ -3512,7 +3577,7 @@
+ 	tr_cnt->rx_sw_amsdu_num = nMSDU;
+ }
+ 
+-VOID announce_or_forward_802_3_pkt(
++static VOID announce_or_forward_802_3_pkt_legacy(
+ 	RTMP_ADAPTER *pAd,
+ 	PNDIS_PACKET pPacket,
+ 	struct wifi_dev *wdev,
+@@ -3605,6 +3670,33 @@
+ 	}
+ #endif /*VLAN_SUPPORT*/
+ 
++#ifdef CONFIG_MTK_AP_BRIDGE
++	if (mtk_ap_plain_ap(wdev)) {
++		struct mtk_ap_bridge_info info;
++		struct apbr_wire_view view;
++		int domain;
++		rcu_read_lock();
++		domain = mtk_ap_bridge_resolve_rcu(wdev->ap_bridge_gate,
++						wdev->if_dev, RTPKT_TO_OSPKT(pPacket), &info);
++		rcu_read_unlock();
++		if (domain < 0) {
++			RELEASE_NDIS_PACKET(pAd, pPacket, NDIS_STATUS_FAILURE);
++			return;
++		}
++		/* Before Size, DA lookup or any group clone; one real Linux handoff.
++		 * Authentication selected for the OS also never uses private forwarding.
++		 */
++		if (info.bridged || apbr_parse_wire(GET_OS_PKT_DATAPTR(pPacket),
++			GET_OS_PKT_LEN(pPacket), APBR_ETHERNET, &view) == APBR_WIRE_EAPOL) {
++			RTPKT_TO_OSPKT(pPacket)->dev = wdev->if_dev;
++			MEM_DBG_PKT_FREE_INC(pPacket);
++			RtmpOsPktProtocolAssign(pPacket);
++			RtmpOsPktRcvHandle(pPacket, pAd->tr_ctl.napi);
++			return;
++		}
++	}
++#endif
++
+ 	if (ops->rx_pkt_foward)
+ 		to_os = ops->rx_pkt_foward(pAd, wdev, pPacket);
+ 
+@@ -3638,6 +3730,30 @@
+ 		tr_cnt->rx_to_os_drop++;
+ 		RELEASE_NDIS_PACKET(pAd, pPacket, NDIS_STATUS_FAILURE);
+ 	}
++}
++
++VOID announce_or_forward_802_3_pkt(RTMP_ADAPTER *pAd, PNDIS_PACKET pkt,
++				  struct wifi_dev *wdev, UCHAR op_mode)
++{
++#ifdef CONFIG_MTK_AP_BRIDGE
++	struct mtk_ap_bridge_reader reader = { 0 };
++	struct apbr_wire_view view;
++	if (mtk_ap_plain_ap(wdev)) {
++		/* Late reader starts before MAP/VLAN policy reads, including BA exits. */
++		if (!mtk_ap_rx_late_enter(pAd, wdev, pkt, &reader) ||
++		    !pskb_may_pull(RTPKT_TO_OSPKT(pkt), GET_OS_PKT_LEN(pkt)) ||
++		    apbr_parse_wire(GET_OS_PKT_DATAPTR(pkt), GET_OS_PKT_LEN(pkt),
++				    APBR_ETHERNET, &view) == APBR_WIRE_INVALID) {
++			mtk_ap_bridge_exit(&reader);
++			RELEASE_NDIS_PACKET(pAd, pkt, NDIS_STATUS_FAILURE);
++			return;
++		}
++	}
++#endif
++	announce_or_forward_802_3_pkt_legacy(pAd, pkt, wdev, op_mode);
++#ifdef CONFIG_MTK_AP_BRIDGE
++	mtk_ap_bridge_exit(&reader);
++#endif
+ }
+ 
+ 
+@@ -4055,9 +4171,20 @@
+ 	}
+ 
+ 	wdev = pAd->wdev_list[wdev_idx];
++
++#ifdef CONFIG_MTK_AP_BRIDGE
++	if (!wdev || pRxBlk->DataSize < 2 + LENGTH_802_3 + 8) {
++		RELEASE_NDIS_PACKET(pAd, pRxBlk->pRxPacket, NDIS_STATUS_FAILURE);
++		return;
++	}
++#endif
+ 	Msdu2Size = *(pRxBlk->pData) + (*(pRxBlk->pData + 1) << 8);
+ 
+-	if ((Msdu2Size <= 1536) && (Msdu2Size < pRxBlk->DataSize)) {
++	if ((Msdu2Size <= 1536) && (Msdu2Size < pRxBlk->DataSize)
++#ifdef CONFIG_MTK_AP_BRIDGE
++	    && Msdu2Size >= LENGTH_802_3 && Msdu2Size + 2 + 8 <= pRxBlk->DataSize
++#endif
++	   ) {
+ 		/* skip two byte MSDU2 len */
+ 		pRxBlk->pData += 2;
+ 		pRxBlk->DataSize -= 2;
+@@ -4088,6 +4215,14 @@
+ 		RELEASE_NDIS_PACKET(pAd, pRxBlk->pRxPacket, NDIS_STATUS_FAILURE);
+ 		return;
+ 	}
++#ifdef CONFIG_MTK_AP_BRIDGE
++	if (!mtk_ap_bridge_inherit(RTPKT_TO_OSPKT(pPacket2),
++				   RTPKT_TO_OSPKT(pRxBlk->pRxPacket))) {
++		RELEASE_NDIS_PACKET(pAd, pPacket2, NDIS_STATUS_FAILURE);
++		RELEASE_NDIS_PACKET(pAd, pRxBlk->pRxPacket, NDIS_STATUS_FAILURE);
++		return;
++	}
++#endif
+ 
+ 	/* update payload size of 1st packet*/
+ 	pRxBlk->DataSize = Payload1Size;
+@@ -4160,6 +4295,13 @@
+ 		/* Frag. Number is 0 : First frag or only one pkt*/
+ 		/* the first pkt of fragment, record it.*/
+ 		if (FC->MoreFrag && pAd->FragFrame.pFragPacket) {
++#ifdef CONFIG_MTK_AP_BRIDGE
++			/* This is a recycled EMPTY reassembly buffer, not a queued frame. */
++			skb_ext_del(RTPKT_TO_OSPKT(pAd->FragFrame.pFragPacket), SKB_EXT_MTK_BSS);
++			if (!mtk_ap_bridge_inherit(RTPKT_TO_OSPKT(pAd->FragFrame.pFragPacket),
++						   RTPKT_TO_OSPKT(pRxBlk->pRxPacket)))
++				goto done;
++#endif
+ 			pFragBuffer = GET_OS_PKT_DATAPTR(pAd->FragFrame.pFragPacket);
+ #ifdef HDR_TRANS_RX_SUPPORT
+ 			if (RX_BLK_TEST_FLAG(pRxBlk, fRX_HDR_TRANS)) {
+@@ -4217,7 +4359,23 @@
+ 			}
+ #endif
+ 		/*Middle & End of fragment*/
++#ifdef CONFIG_MTK_AP_BRIDGE
++		{
++			const struct mtk_ap_bridge_skb_ext *ext =
++				skb_ext_find(RTPKT_TO_OSPKT(pAd->FragFrame.pFragPacket),
++					     SKB_EXT_MTK_BSS);
++			if ((pRxBlk->ap_bridge_reader.gate || (ext && ext->rx_owner)) &&
++			    !mtk_ap_bridge_validate(RTPKT_TO_OSPKT(pAd->FragFrame.pFragPacket),
++						    &pRxBlk->ap_bridge_reader, true)) {
++				RESET_FRAGFRAME(pAd->FragFrame);
++				goto done;
++			}
++		}
++#endif
+ 		if ((pRxBlk->SN != pAd->FragFrame.Sequence) ||
++#ifdef CONFIG_MTK_AP_BRIDGE
++		    (pRxBlk->wcid != pAd->FragFrame.wcid) ||
++#endif
+ 			(pRxBlk->FN != (pAd->FragFrame.LastFrag + 1)) ||
+ 			((pAd->FragFrame.sec_on) && (pAd->FragFrame.sec_mode == pRxBlk->sec_mode) &&
+ 			((pRxBlk->CCMP_PN != (pAd->FragFrame.LastPN + 1))
+@@ -4622,6 +4780,12 @@
+ 
+ 		DEV_ALLOC_SKB(ptmpSkb, length);
+ 		if (ptmpSkb) {
++#ifdef CONFIG_MTK_AP_BRIDGE
++			if (!mtk_ap_bridge_inherit(ptmpSkb, RTPKT_TO_OSPKT(pRxBlk->pRxPacket))) {
++				consume_skb(ptmpSkb);
++				goto done;
++			}
++#endif
+ 			 NdisZeroMemory(ptmpSkb->head, length);
+ 
+ 			 /* copy 802.11 header without Qos Contrl */
+@@ -6218,6 +6382,10 @@
+ 	UINT data_len = pRxBlk->DataSize;
+ 	UCHAR wdev_idx = wdev->wdev_idx;
+ 	FRAME_CONTROL *FC = (FRAME_CONTROL *)pRxBlk->FC;
++#ifdef CONFIG_MTK_AP_BRIDGE
++	int ap_access = 0;
++	BOOLEAN is_eap;
++#endif
+ 
+ 	if (wdev_idx >= WDEV_NUM_MAX) {
+ 		MTWF_DBG(pAd, DBG_CAT_RX, DBG_SUBCAT_ALL, DBG_LVL_ERROR, "%s():Invalid wdev_idx(%d)\n", __func__, wdev_idx);
+@@ -6238,7 +6406,24 @@
+ 
+ 	/* non-EAP frame */
+ 	if (pEntry) {
++#ifdef CONFIG_MTK_AP_BRIDGE
++		if (mtk_ap_plain_ap(wdev)) {
++			ap_access = mtk_ap_rx_authorize(pAd, pEntry, pRxBlk, wdev,
++						pData, data_len, eth_frame);
++			if (ap_access < 0) {
++				RELEASE_NDIS_PACKET(pAd, pRxBlk->pRxPacket, NDIS_STATUS_FAILURE);
++				return;
++			}
++			is_eap = ap_access == 1;
++			if (is_eap)
++				RTMPCheckWPAframe(pAd, pEntry, pData, data_len, wdev_idx, eth_frame);
++		} else {
++			is_eap = RTMPCheckWPAframe(pAd, pEntry, pData, data_len, wdev_idx, eth_frame);
++		}
++		if (!is_eap) {
++#else
+ 		if (!RTMPCheckWPAframe(pAd, pEntry, pData, data_len, wdev_idx, eth_frame)) {
++#endif
+ 			if (RX_BLK_TEST_FLAG(pRxBlk, fRX_CM) && FC && (FC->Type == FC_TYPE_DATA) && (pRxBlk->DataSize) && (FC->Wep)) {
+ 				MTWF_DBG(pAd, DBG_CAT_RX, DBG_SUBCAT_ALL, DBG_LVL_INFO, "%s: CM, wcid=%d\n",
+ 							__func__, pRxBlk->wcid);
+@@ -6751,11 +6936,26 @@
+ 
+ VOID rx_802_3_data_frm_announce(RTMP_ADAPTER *pAd, MAC_TABLE_ENTRY *pEntry, RX_BLK *pRxBlk, struct wifi_dev *wdev)
+ {
++#ifdef CONFIG_MTK_AP_BRIDGE
++	BOOLEAN eth_frame = TRUE;
++#else
+ 	BOOLEAN eth_frame = FALSE;
++#endif
+ 	UCHAR *pData = pRxBlk->pData;
+ 	UINT data_len = pRxBlk->DataSize;
+ 	UCHAR wdev_idx = wdev->wdev_idx;
+ 	FRAME_CONTROL *FC = (FRAME_CONTROL *)pRxBlk->FC;
++
++#ifdef CONFIG_MTK_AP_BRIDGE
++	if (mtk_ap_plain_ap(wdev)) {
++		int access = mtk_ap_rx_authorize(pAd, pEntry, pRxBlk, wdev,
++						pRxBlk->pData, pRxBlk->DataSize, true);
++		if (access < 0) {
++			RELEASE_NDIS_PACKET(pAd, pRxBlk->pRxPacket, NDIS_STATUS_FAILURE);
++			return;
++		}
++	}
++#endif
+ 
+ 	if (pEntry && pEntry->Sst == SST_ASSOC) {
+ 		struct tx_rx_ctl *tr_ctl = &pAd->tr_ctl;
+@@ -6987,6 +7187,12 @@
+ 	if (pEntry && pEntry->wdev) {
+ 		struct wifi_dev_ops *ops = pEntry->wdev->wdev_ops;
+ 
++#ifdef CONFIG_MTK_AP_BRIDGE
++		/* Before rx_pkt_allowed reads BSS/role/security/VLAN configuration. */
++		if (!mtk_ap_rx_early_enter(pAd, rx_blk, pEntry->wdev))
++			return NULL;
++#endif
++
+ 		if (ops->rx_pkt_allowed) {
+ 			if (!ops->rx_pkt_allowed(pAd, pEntry->wdev, rx_blk)) {
+ 				MTWF_DBG(pAd, DBG_CAT_RX, DBG_SUBCAT_ALL, DBG_LVL_INFO,
+@@ -7051,6 +7257,11 @@
+ 	RXINFO_STRUC *pRxInfo = pRxBlk->pRxInfo;
+ #endif
+ 	struct wifi_dev_ops *ops;
++	BOOLEAN consumed;
++
++#ifdef CONFIG_MTK_AP_BRIDGE
++	memset(&pRxBlk->ap_bridge_reader, 0, sizeof(pRxBlk->ap_bridge_reader));
++#endif
+ 
+ 	pEntry = check_rx_pkt_allowed(pAd, pRxBlk);
+ 
+@@ -7060,10 +7271,17 @@
+ 	wdev = pEntry->wdev;
+ 	ops = wdev->wdev_ops;
+ 
+-	if (ops->ieee_802_3_data_rx(pAd, wdev, pRxBlk, pEntry))
++	consumed = ops->ieee_802_3_data_rx(pAd, wdev, pRxBlk, pEntry);
++#ifdef CONFIG_MTK_AP_BRIDGE
++	mtk_ap_rx_early_exit(pRxBlk);
++#endif
++	if (consumed)
+ 		return;
+ 
+ drop:
++#ifdef CONFIG_MTK_AP_BRIDGE
++	mtk_ap_rx_early_exit(pRxBlk);
++#endif
+ #ifdef CONFIG_AP_SUPPORT
+ 
+ 	/* Increase received error packet counter per BSS */
+@@ -7101,6 +7319,11 @@
+ 	MAC_TABLE_ENTRY *pEntry = NULL;
+ 	struct wifi_dev *wdev;
+ 	struct wifi_dev_ops *ops;
++	BOOLEAN consumed;
++
++#ifdef CONFIG_MTK_AP_BRIDGE
++	memset(&pRxBlk->ap_bridge_reader, 0, sizeof(pRxBlk->ap_bridge_reader));
++#endif
+ 
+ 	pEntry = check_rx_pkt_allowed(pAd, pRxBlk);
+ 
+@@ -7110,10 +7333,17 @@
+ 	wdev = pEntry->wdev;
+ 	ops = wdev->wdev_ops;
+ 
+-	if (ops->ieee_802_11_data_rx(pAd, wdev, pRxBlk, pEntry))
++	consumed = ops->ieee_802_11_data_rx(pAd, wdev, pRxBlk, pEntry);
++#ifdef CONFIG_MTK_AP_BRIDGE
++	mtk_ap_rx_early_exit(pRxBlk);
++#endif
++	if (consumed)
+ 		return;
+ 
+ drop:
++#ifdef CONFIG_MTK_AP_BRIDGE
++	mtk_ap_rx_early_exit(pRxBlk);
++#endif
+ #ifdef CONFIG_AP_SUPPORT
+ 
+ 	/* Increase received error packet counter per BSS */
+@@ -7320,7 +7550,7 @@
+ #ifdef RATE_PRIOR_SUPPORT
+ 	MAC_TABLE_ENTRY *pEntry = NULL;
+ #endif/*RATE_PRIOR_SUPPORT*/
+-#ifdef VLAN_SUPPORT
++#if defined(VLAN_SUPPORT) && !defined(CONFIG_MTK_AP_BRIDGE)
+ 	UCHAR eapol_80211_frame_offset = 0;
+ #endif
+ 
+@@ -7328,12 +7558,14 @@
+ 	struct wifi_dev *wdev;
+ 	UCHAR wdev_idx = RTMP_GET_PACKET_WDEV(pRxPacket);
+ #endif /* SNIFFER_SUPPORT */
++#ifndef CONFIG_MTK_AP_BRIDGE
+ 	enum pkt_type {
+ 		_802_3_data,
+ 		_802_3_eapol,
+ 		_802_3_vlan_data,
+ 		_802_3_vlan_eapol,
+ 	} type;
++#endif
+ 
+ #ifdef CONFIG_ATE
+ 	if (ATE_ON(pAd)) {
+@@ -7402,6 +7634,91 @@
+ 	switch (FC->Type) {
+ 	case FC_TYPE_DATA:
+ 		/* MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_OFF,("rx_packet_process: wcid=0x%x\n",pRxBlk->wcid)); */
++#ifdef CONFIG_MTK_AP_BRIDGE
++		{
++			struct apbr_wire_view view;
++			enum apbr_wire_kind kind;
++			unsigned int tags;
++			bool ethernet = RX_BLK_TEST_FLAG(pRxBlk, fRX_HDR_TRANS);
++			if (!pRxBlk->pData)
++				goto ap_bad_data;
++			/* NULL/QoS-NULL has no LLC payload. Preserve the original
++			 * power-save handling before the AP ops discard its empty data.
++			 */
++			if (FC->SubType & 0x04) {
++				if (!ethernet && pRxBlk->DataSize < LENGTH_802_11)
++					goto ap_bad_data;
++				if (ethernet)
++					dev_rx_802_3_data_frm(pAd, pRxBlk);
++				else
++					dev_rx_802_11_data_frm(pAd, pRxBlk);
++				break;
++			}
++			/* Later fragments need not contain an LLC header or a complete
++			 * EAPOL body. The reassembly path authorizes the actual peer,
++			 * stamps before buffering, and parses only the completed MSDU.
++			 */
++			if (pRxBlk->FN || FC->MoreFrag) {
++				unsigned int hdr = LENGTH_802_11;
++				if (FC->FrDs && FC->ToDs)
++					hdr += 6;
++				if (FC->SubType & 0x08) {
++					hdr += 2;
++					if (FC->Order)
++						hdr += 4;
++				}
++				if (pRxBlk->DataSize < (ethernet ? LENGTH_802_3 : hdr))
++					goto ap_bad_data;
++				if (ethernet)
++					dev_rx_802_3_data_frm(pAd, pRxBlk);
++				else
++					dev_rx_802_11_data_frm(pAd, pRxBlk);
++				break;
++			}
++			/* Normalize the descriptor-indicated hardware padding before
++			 * parsing; this operation uses only bounded packet bytes.
++			 */
++#ifdef VLAN_SUPPORT
++			if (ethernet && pRxBlk->is_htf)
++				remove_vlan_hw_padding(pAd, pRxBlk);
++#endif
++			kind = apbr_parse_wire(pRxBlk->pData, pRxBlk->DataSize,
++				ethernet ? APBR_ETHERNET : APBR_IEEE80211, &view);
++			if (kind == APBR_WIRE_INVALID)
++				goto ap_bad_data;
++			if (kind == APBR_WIRE_EAPOL) {
++				tags = view.tags;
++				while (tags--) {
++					if (ethernet)
++						remove_vlan_tag(pAd, pRxBlk->pRxPacket);
++					else
++						remove_80211_frame_vlan_tag(pAd, pRxBlk->pRxPacket,
++									 view.type_offset);
++					pRxBlk->pData = GET_OS_PKT_DATAPTR(pRxBlk->pRxPacket);
++					pRxBlk->DataSize -= LENGTH_802_1Q;
++					if (!ethernet)
++						pRxBlk->FC = pRxBlk->pData;
++				}
++				update_rxblk_addr(pRxBlk);
++				if (ethernet) {
++					if (skb_cow_head(RTPKT_TO_OSPKT(pRxBlk->pRxPacket), 64))
++						goto ap_bad_data;
++					/* cow_head may have moved the Ethernet header. */
++					pRxBlk->pData = GET_OS_PKT_DATAPTR(pRxBlk->pRxPacket);
++					update_rxblk_addr(pRxBlk);
++					rebuild_802_11_eapol_frm(pAd, pRxBlk);
++				}
++			}
++			if (ethernet && kind != APBR_WIRE_EAPOL)
++				dev_rx_802_3_data_frm(pAd, pRxBlk);
++			else
++				dev_rx_802_11_data_frm(pAd, pRxBlk);
++			break;
++		ap_bad_data:
++			RELEASE_NDIS_PACKET(pAd, pRxPacket, NDIS_STATUS_FAILURE);
++			break;
++		}
++#else
+ 		if (RX_BLK_TEST_FLAG(pRxBlk, fRX_HDR_TRANS)) {
+ 			if (RTMPEqualMemory(TPID, pRxBlk->pData + LENGTH_802_3_NO_TYPE, 2))
+ 				type = _802_3_vlan_data;
+@@ -7464,6 +7781,7 @@
+ #endif
+ 			dev_rx_802_11_data_frm(pAd, pRxBlk);
+ 		}
++#endif
+ 		break;
+ 
+ 	case FC_TYPE_MGMT:
+@@ -7552,7 +7870,11 @@
+ 
+ #ifdef IGMP_SNOOPING_NON_OFFLOAD
+ 		/* For Panther's IGMP snooping implemented in driver. */
+-		if (wdev->IgmpSnoopEnable) {
++		if (wdev->IgmpSnoopEnable
++#ifdef CONFIG_MTK_AP_BRIDGE
++		    && !mtk_ap_plain_ap(wdev)
++#endif
++		) {
+ 			NDIS_STATUS ret_val = igmp_snoop_non_offload(pAd, wdev, pkt);
+ 
+ 			if (ret_val != NDIS_STATUS_MORE_PROCESSING_REQUIRED)
+@@ -7579,7 +7901,7 @@
+ 	return NDIS_STATUS_SUCCESS;
+ }
+ 
+-INT wdev_tx_pkts(NDIS_HANDLE dev_hnd, PPNDIS_PACKET pkt_list, UINT pkt_cnt, struct wifi_dev *wdev)
++static INT wdev_tx_pkts_legacy(NDIS_HANDLE dev_hnd, PPNDIS_PACKET pkt_list, UINT pkt_cnt, struct wifi_dev *wdev)
+ {
+ 	RTMP_ADAPTER *pAd = (RTMP_ADAPTER *)dev_hnd;
+ 	PNDIS_PACKET pPacket;
+@@ -7650,7 +7972,7 @@
+ 			WIFI HNAT need to learn packets going to which interface from skb cb setting.
+ 			@20150325
+ 		*/
+-#if defined(BB_SOC) && defined(BB_RA_HWNAT_WIFI)
++#if defined(BB_SOC) && defined(BB_RA_HWNAT_WIFI) && !defined(CONFIG_MTK_AP_BRIDGE)
+ 
+ 		if (ra_sw_nat_hook_tx != NULL) {
+ #ifdef TCSUPPORT_MT7510_FE
+@@ -7666,7 +7988,7 @@
+ 		}
+ 
+ #endif
+-#ifdef CONFIG_FAST_NAT_SUPPORT
++#if defined(CONFIG_FAST_NAT_SUPPORT) && !defined(CONFIG_MTK_AP_BRIDGE)
+ 		if ((ra_sw_nat_hook_tx != NULL)
+ #ifdef WHNAT_SUPPORT
+ 			/*if not support pure hw nat, then goto sw nat fast path*/
+@@ -7686,7 +8008,12 @@
+ 
+ #ifdef REDUCE_TCP_ACK_SUPPORT
+ 		pDA = GET_OS_PKT_DATAPTR(pPacket);
++#ifdef CONFIG_MTK_AP_BRIDGE
++		pEntry = mtk_ap_plain_ap(wdev) ? MacTableLookup2(pAd, pDA, wdev) :
++			MacTableLookup(pAd, pDA);
++#else
+ 		pEntry = MacTableLookup(pAd, pDA);
++#endif
+ 		if (pEntry)
+ 			RTMP_SET_PACKET_WCID(pPacket, pEntry->wcid);
+ 
+@@ -7736,7 +8063,11 @@
+ #endif /* RT_CFG80211_SUPPORT */
+ #else
+ 			UCHAR *pSrcBufVA = GET_OS_PKT_DATAPTR(pPacket);
+-			if (wdev->wdev_type == WDEV_TYPE_AP) {
++			if (wdev->wdev_type == WDEV_TYPE_AP
++#ifdef CONFIG_MTK_AP_BRIDGE
++			    && !mtk_ap_plain_ap(wdev)
++#endif
++			   ) {
+ 				if (MAC_ADDR_IS_GROUP(pSrcBufVA))
+ 					a4_send_clone_pkt(pAd, wdev->func_idx, pPacket, NULL);
+ 			}
+@@ -7770,6 +8101,29 @@
+ 	}
+ 
+ 	return 0;
++}
++
++INT wdev_tx_pkts(NDIS_HANDLE dev_hnd, PPNDIS_PACKET pkt_list, UINT pkt_cnt,
++		 struct wifi_dev *wdev)
++{
++#ifdef CONFIG_MTK_AP_BRIDGE
++	RTMP_ADAPTER *ad = dev_hnd;
++	unsigned int i;
++	for (i = 0; i < pkt_cnt; i++) {
++		struct mtk_ap_bridge_reader reader = { 0 };
++		PNDIS_PACKET pkt = pkt_list[i];
++		/* Before ACK caching and every VLAN/configuration access. */
++		if (!mtk_ap_tx_begin(ad, wdev, pkt, &reader, false)) {
++			RELEASE_NDIS_PACKET(ad, pkt, NDIS_STATUS_FAILURE);
++			continue;
++		}
++		wdev_tx_pkts_legacy(dev_hnd, &pkt, 1, wdev);
++		mtk_ap_bridge_exit(&reader);
++	}
++	return 0;
++#else
++	return wdev_tx_pkts_legacy(dev_hnd, pkt_list, pkt_cnt, wdev);
++#endif
+ }
+ 
+ #ifdef TX_AGG_ADJUST_WKR
+--- a/mt_wifi/embedded/common/cmm_info.c
++++ b/mt_wifi/embedded/common/cmm_info.c
+@@ -2291,7 +2291,7 @@
+ }
+ 
+ #ifdef MAP_TS_TRAFFIC_SUPPORT
+-INT Set_MapTS_Proc(
++static INT mtk_guarded_Set_MapTS_Proc(
+ 	PRTMP_ADAPTER pAd,
+ 	char *arg)
+ {
+@@ -2312,10 +2312,26 @@
+ 
+ 	return TRUE;
+ }
++
++INT Set_MapTS_Proc(
++	PRTMP_ADAPTER pAd,
++	char *arg)
++{
++	INT ret;
++#ifdef CONFIG_MTK_AP_BRIDGE
++	if (!mtk_ap_config_enter(pAd, NULL))
++		return FALSE;
++#endif
++	ret = mtk_guarded_Set_MapTS_Proc(pAd, arg);
++#ifdef CONFIG_MTK_AP_BRIDGE
++	mtk_ap_config_exit(pAd);
++#endif
++	return ret;
++}
+ #endif
+ 
+ #ifdef MAP_R2
+-INT Set_Map_Bh_Primary_Vid_Proc(RTMP_ADAPTER *pAd, RTMP_STRING *arg)
++static INT mtk_guarded_Set_Map_Bh_Primary_Vid_Proc(RTMP_ADAPTER *pAd, RTMP_STRING *arg)
+ {
+ 	UINT16 vid = (UINT16) os_str_tol(arg, 0, 10);
+ 
+@@ -2338,7 +2354,21 @@
+ 	return TRUE;
+ }
+ 
+-INT Set_Map_Bh_Primary_Pcp_Proc(RTMP_ADAPTER *pAd, RTMP_STRING *arg)
++INT Set_Map_Bh_Primary_Vid_Proc(RTMP_ADAPTER *pAd, RTMP_STRING *arg)
++{
++	INT ret;
++#ifdef CONFIG_MTK_AP_BRIDGE
++	if (!mtk_ap_config_enter(pAd, NULL))
++		return FALSE;
++#endif
++	ret = mtk_guarded_Set_Map_Bh_Primary_Vid_Proc(pAd, arg);
++#ifdef CONFIG_MTK_AP_BRIDGE
++	mtk_ap_config_exit(pAd);
++#endif
++	return ret;
++}
++
++static INT mtk_guarded_Set_Map_Bh_Primary_Pcp_Proc(RTMP_ADAPTER *pAd, RTMP_STRING *arg)
+ {
+ 	UCHAR pcp = (UCHAR) os_str_tol(arg, 0, 10);
+ 
+@@ -2361,7 +2391,21 @@
+ 	return TRUE;
+ }
+ 
+-INT Set_Map_Bh_Vid_Proc(RTMP_ADAPTER *pAd, RTMP_STRING *arg)
++INT Set_Map_Bh_Primary_Pcp_Proc(RTMP_ADAPTER *pAd, RTMP_STRING *arg)
++{
++	INT ret;
++#ifdef CONFIG_MTK_AP_BRIDGE
++	if (!mtk_ap_config_enter(pAd, NULL))
++		return FALSE;
++#endif
++	ret = mtk_guarded_Set_Map_Bh_Primary_Pcp_Proc(pAd, arg);
++#ifdef CONFIG_MTK_AP_BRIDGE
++	mtk_ap_config_exit(pAd);
++#endif
++	return ret;
++}
++
++static INT mtk_guarded_Set_Map_Bh_Vid_Proc(RTMP_ADAPTER *pAd, RTMP_STRING *arg)
+ {
+ 	UINT16 vid;
+ 	UINT32 index = 0, offset = 0;
+@@ -2410,7 +2454,21 @@
+ 	return TRUE;
+ }
+ 
+-INT Set_Map_Fh_Vid_Proc(RTMP_ADAPTER *pAd, RTMP_STRING *arg)
++INT Set_Map_Bh_Vid_Proc(RTMP_ADAPTER *pAd, RTMP_STRING *arg)
++{
++	INT ret;
++#ifdef CONFIG_MTK_AP_BRIDGE
++	if (!mtk_ap_config_enter(pAd, NULL))
++		return FALSE;
++#endif
++	ret = mtk_guarded_Set_Map_Bh_Vid_Proc(pAd, arg);
++#ifdef CONFIG_MTK_AP_BRIDGE
++	mtk_ap_config_exit(pAd);
++#endif
++	return ret;
++}
++
++static INT mtk_guarded_Set_Map_Fh_Vid_Proc(RTMP_ADAPTER *pAd, RTMP_STRING *arg)
+ {
+ 	UINT16 vid = (UINT16) os_str_tol(arg, 0, 10);
+ 
+@@ -2433,7 +2491,21 @@
+ 	return TRUE;
+ }
+ 
+-INT Set_Map_Transparent_Vid_Proc(RTMP_ADAPTER *pAd, RTMP_STRING *arg)
++INT Set_Map_Fh_Vid_Proc(RTMP_ADAPTER *pAd, RTMP_STRING *arg)
++{
++	INT ret;
++#ifdef CONFIG_MTK_AP_BRIDGE
++	if (!mtk_ap_config_enter(pAd, NULL))
++		return FALSE;
++#endif
++	ret = mtk_guarded_Set_Map_Fh_Vid_Proc(pAd, arg);
++#ifdef CONFIG_MTK_AP_BRIDGE
++	mtk_ap_config_exit(pAd);
++#endif
++	return ret;
++}
++
++static INT mtk_guarded_Set_Map_Transparent_Vid_Proc(RTMP_ADAPTER *pAd, RTMP_STRING *arg)
+ {
+ 	UINT16 vid = 0;
+ 	UINT32 index = 0, offset = 0;
+@@ -2472,6 +2544,20 @@
+ 	}
+ 
+ 	return TRUE;
++}
++
++INT Set_Map_Transparent_Vid_Proc(RTMP_ADAPTER *pAd, RTMP_STRING *arg)
++{
++	INT ret;
++#ifdef CONFIG_MTK_AP_BRIDGE
++	if (!mtk_ap_config_enter(pAd, NULL))
++		return FALSE;
++#endif
++	ret = mtk_guarded_Set_Map_Transparent_Vid_Proc(pAd, arg);
++#ifdef CONFIG_MTK_AP_BRIDGE
++	mtk_ap_config_exit(pAd);
++#endif
++	return ret;
+ }
+ #endif
+ #endif
+--- a/mt_wifi/embedded/common/fp_fair_qm.c
++++ b/mt_wifi/embedded/common/fp_fair_qm.c
+@@ -271,6 +271,9 @@
+ 	deq_info.target_que = WMM_NUM_OF_AC;
+ 
+ 	while (need_schedule) {
++#ifdef CONFIG_MTK_AP_BRIDGE
++		MTK_AP_SCOPED_READER(ap_reader);
++#endif
+ 		if (data_turn == FALSE)	{
+ 			pkt = fp_fair_first_mgmt_tx_element(pAd, idx);
+ 			if (!pkt) {
+@@ -306,6 +309,23 @@
+ 		wdev = wdev_search_by_pkt(pAd, pkt);
+ 		if (!wdev)
+ 			continue;
++
++#ifdef CONFIG_MTK_AP_BRIDGE
++		if (!mtk_ap_tx_enter_queued(pAd, wdev, pkt, &ap_reader) ||
++		    !mtk_ap_tx_valid(pAd, wdev, pkt, &ap_reader)) {
++			if (!data_turn) {
++				pkt = fp_fair_get_mgmt_tx_element(pAd, idx);
++				if (pkt)
++					RELEASE_NDIS_PACKET(pAd, pkt, NDIS_STATUS_FAILURE);
++				continue;
++			}
++			pkt = fp_fair_get_data_tx_element(pAd, &deq_info, tr_entry);
++			if (pkt)
++				RELEASE_NDIS_PACKET(pAd, pkt, NDIS_STATUS_FAILURE);
++			deq_info.deq_pkt_cnt++;
++			goto DATA_EXIT;
++		}
++#endif
+ 
+ 		wdev_ops = wdev->wdev_ops;
+ 		pTxBlk->resource_idx = hif_get_resource_idx(pAd->hdev_ctrl, wdev, 0, 0);
+--- a/mt_wifi/embedded/common/fp_qm.c
++++ b/mt_wifi/embedded/common/fp_qm.c
+@@ -421,6 +421,9 @@
+ 
+ 	while (need_schedule &&
+ 			(tx_process_cnt < qm->max_tx_process_cnt)) {
++#ifdef CONFIG_MTK_AP_BRIDGE
++		MTK_AP_SCOPED_READER(ap_reader);
++#endif
+ 
+ 		NdisZeroMemory((UCHAR *)&blk, sizeof(TX_BLK));
+ 		tx_blk = &blk;
+@@ -434,6 +437,17 @@
+ 		wdev = wdev_search_by_pkt(pAd, pkt);
+ 
+ 		if (wdev) {
++
++#ifdef CONFIG_MTK_AP_BRIDGE
++			if (!mtk_ap_tx_enter_queued(pAd, wdev, pkt, &ap_reader) ||
++			    !mtk_ap_tx_valid(pAd, wdev, pkt, &ap_reader)) {
++				pkt = fp_get_tx_element(pAd, idx);
++				if (pkt)
++					RELEASE_NDIS_PACKET(pAd, pkt, NDIS_STATUS_FAILURE);
++				tr_cnt->tx_not_allowed_drop++;
++				continue;
++			}
++#endif
+ 
+ 			wdev_ops = wdev->wdev_ops;
+ 			tx_blk->resource_idx = hif_get_resource_idx(pAd->hdev_ctrl, wdev, 0, 0);
+--- a/mt_wifi/embedded/common/fq_qm.c
++++ b/mt_wifi/embedded/common/fq_qm.c
+@@ -1023,6 +1023,12 @@
+ 
+ INT set_fq_enable(PRTMP_ADAPTER pAd, RTMP_STRING *arg)
+ {
++#ifdef CONFIG_MTK_AP_BRIDGE
++	/* Runtime QM/TM replacement is outside the fixed CPU product lifecycle. */
++	(void)pAd;
++	(void)arg;
++	return -EOPNOTSUPP;
++#else
+ 	UINT32 en, rv, factor;
+ 	RTMP_CHIP_CAP *cap = hc_get_chip_cap(pAd->hdev_ctrl);
+ 	struct qm_ops **qm_ops = &pAd->qm_ops;
+@@ -1078,6 +1084,7 @@
+ 		return FALSE;
+ 
+ 	return TRUE;
++#endif
+ }
+ 
+ INT show_fq_info(PRTMP_ADAPTER pAd, RTMP_STRING *arg)
+--- a/mt_wifi/embedded/common/mwds.c
++++ b/mt_wifi/embedded/common/mwds.c
+@@ -226,7 +226,7 @@
+ 	return TRUE;
+ }
+ 
+-INT Set_Ap_MWDS_Proc(
++static INT mtk_guarded_Set_Ap_MWDS_Proc(
+ 	IN  PRTMP_ADAPTER pAd,
+ 	IN  PSTRING arg
+ )
+@@ -234,6 +234,23 @@
+ 	UCHAR Enable;
+ 	Enable = simple_strtol(arg, 0, 10);
+ 	return Set_Enable_MWDS_Proc(pAd, Enable, TRUE);
++}
++
++INT Set_Ap_MWDS_Proc(
++	IN  PRTMP_ADAPTER pAd,
++	IN  PSTRING arg
++)
++{
++	INT ret;
++#ifdef CONFIG_MTK_AP_BRIDGE
++	if (!mtk_ap_config_enter(pAd, NULL))
++		return FALSE;
++#endif
++	ret = mtk_guarded_Set_Ap_MWDS_Proc(pAd, arg);
++#ifdef CONFIG_MTK_AP_BRIDGE
++	mtk_ap_config_exit(pAd);
++#endif
++	return ret;
+ }
+ 
+ INT Set_ApCli_MWDS_Proc(
+--- a/mt_wifi/embedded/common/qm.c
++++ b/mt_wifi/embedded/common/qm.c
+@@ -1121,6 +1121,11 @@
+ 	unsigned long IrqFlags = 0;
+ 	INT ret = 0;
+ 	struct tx_rx_ctl *tr_ctl = &pAd->tr_ctl;
++#ifdef CONFIG_MTK_AP_BRIDGE
++	MTK_AP_SCOPED_READER(ap_reader);
++	if (!IS_TR_WCID_VALID(pAd, wcid))
++		return NDIS_STATUS_FAILURE;
++#endif
+ 
+ 	tr_entry = &tr_ctl->tr_entry[wcid];
+ 
+@@ -1146,6 +1151,24 @@
+ 			TR_ENQ_COUNT_DEC(tr_entry);
+ 			pPacket = QUEUE_ENTRY_TO_PACKET(qEntry);
+ 			ASSERT(RTMP_GET_PACKET_WCID(pPacket) == wcid);
++
++#ifdef CONFIG_MTK_AP_BRIDGE
++			if (!pTxBlk->TotalFrameNum) {
++				mtk_ap_bridge_exit(&ap_reader);
++				wdev = wdev_search_by_pkt(pAd, pPacket);
++				if (!wdev || !mtk_ap_tx_enter_queued(pAd, wdev, pPacket, &ap_reader)) {
++					RELEASE_NDIS_PACKET(pAd, pPacket, NDIS_STATUS_FAILURE);
++					deq_info->deq_pkt_cnt++;
++					goto dequeue;
++				}
++			}
++			if (wdev_search_by_pkt(pAd, pPacket) != wdev ||
++			    !mtk_ap_tx_valid(pAd, wdev, pPacket, &ap_reader)) {
++				RELEASE_NDIS_PACKET(pAd, pPacket, NDIS_STATUS_FAILURE);
++				deq_info->deq_pkt_cnt++;
++				goto dequeue;
++			}
++#endif
+ 
+ 			if (pTxBlk->TotalFrameNum == 0) {
+ 				wdev = wdev_search_by_pkt(pAd, pPacket);
+@@ -1349,6 +1372,9 @@
+ #endif /* MT7626_REDUCE_TX_OVERHEAD */
+ 
+ 	do {
++#ifdef CONFIG_MTK_AP_BRIDGE
++		MTK_AP_SCOPED_READER(ap_reader);
++#endif
+ 		pkt = first_high_prio_pkt(pAd);
+ 
+ 		if (!pkt) {
+@@ -1356,6 +1382,15 @@
+ 		}
+ 
+ 		wdev = wdev_search_by_pkt(pAd, pkt);
++#ifdef CONFIG_MTK_AP_BRIDGE
++		if (!wdev || !mtk_ap_tx_enter_queued(pAd, wdev, pkt, &ap_reader) ||
++		    !mtk_ap_tx_valid(pAd, wdev, pkt, &ap_reader)) {
++			pkt = get_high_prio_pkt(pAd);
++			if (pkt)
++				RELEASE_NDIS_PACKET(pAd, pkt, NDIS_STATUS_FAILURE);
++			continue;
++		}
++#endif
+ 		tx_blk->QueIdx = RTMP_GET_PACKET_QUEIDX(pkt);
+ 		tx_blk->resource_idx = hif_get_resource_idx(pAd->hdev_ctrl, wdev, TX_DATA_HIGH_PRIO, tx_blk->QueIdx);
+ #ifdef RANDOM_PKT_GEN
+@@ -1371,6 +1406,13 @@
+ 
+ 		if (!pkt)
+ 			continue;
++#ifdef CONFIG_MTK_AP_BRIDGE
++		if (wdev_search_by_pkt(pAd, pkt) != wdev ||
++		    !mtk_ap_tx_valid(pAd, wdev, pkt, &ap_reader)) {
++			RELEASE_NDIS_PACKET(pAd, pkt, NDIS_STATUS_FAILURE);
++			continue;
++		}
++#endif
+ 
+ 		wcid = RTMP_GET_PACKET_WCID(pkt);
+ 
+@@ -1475,6 +1517,9 @@
+ #endif /* MT7626_REDUCE_TX_OVERHEAD */
+ 
+ 	do {
++#ifdef CONFIG_MTK_AP_BRIDGE
++		MTK_AP_SCOPED_READER(ap_reader);
++#endif
+ 		pkt = first_mgmt_pkt(pAd);
+ 
+ 		if (!pkt) {
+@@ -1482,6 +1527,15 @@
+ 		}
+ 
+ 		wdev = wdev_search_by_pkt(pAd, pkt);
++#ifdef CONFIG_MTK_AP_BRIDGE
++		if (!wdev || !mtk_ap_tx_enter_queued(pAd, wdev, pkt, &ap_reader) ||
++		    !mtk_ap_tx_valid(pAd, wdev, pkt, &ap_reader)) {
++			pkt = get_mgmt_pkt(pAd);
++			if (pkt)
++				RELEASE_NDIS_PACKET(pAd, pkt, NDIS_STATUS_FAILURE);
++			continue;
++		}
++#endif
+ 		tx_blk->resource_idx = hif_get_resource_idx(pAd->hdev_ctrl, wdev, RTMP_GET_PACKET_TYPE(pkt), RTMP_GET_PACKET_QUEIDX(pkt));
+ 		ret = asic_check_hw_resource(pAd, wdev, tx_blk->resource_idx);
+ 
+@@ -1493,6 +1547,13 @@
+ 
+ 		if (!pkt)
+ 			return NDIS_STATUS_FAILURE;
++#ifdef CONFIG_MTK_AP_BRIDGE
++		if (wdev_search_by_pkt(pAd, pkt) != wdev ||
++		    !mtk_ap_tx_valid(pAd, wdev, pkt, &ap_reader)) {
++			RELEASE_NDIS_PACKET(pAd, pkt, NDIS_STATUS_FAILURE);
++			continue;
++		}
++#endif
+ 
+ 		wcid = RTMP_GET_PACKET_WCID(pkt);
+ 
+@@ -1535,6 +1596,9 @@
+ 	CHAR q_idx = 0;
+ 	INT ret = NDIS_STATUS_FAILURE;
+ 	struct tx_rx_ctl *tr_ctl = &pAd->tr_ctl;
++#ifdef CONFIG_MTK_AP_BRIDGE
++	MTK_AP_SCOPED_READER(ap_reader);
++#endif
+ 
+ 	if (pTxPacketList->Head) {
+ 		qEntry = RemoveHeadQueue(pTxPacketList);
+@@ -1542,10 +1606,24 @@
+ 		q_idx = RTMP_GET_PACKET_QUEIDX(pPacket);
+ 		pTxBlk->QueIdx = q_idx;
+ 		pTxBlk->wdev = wdev_search_by_pkt(pAd, pPacket);
++#ifdef CONFIG_MTK_AP_BRIDGE
++		if (!pTxBlk->wdev ||
++		    !mtk_ap_tx_enter_queued(pAd, pTxBlk->wdev, pPacket, &ap_reader) ||
++		    !mtk_ap_tx_valid(pAd, pTxBlk->wdev, pPacket, &ap_reader)) {
++			RELEASE_NDIS_PACKET(pAd, pPacket, NDIS_STATUS_FAILURE);
++			return NDIS_STATUS_FAILURE;
++		}
++#endif
+ 		/* sanity check & correct the wrong wdev , when peer STA connect from one band to the other */
+ 		pTxBlk->tr_entry = &tr_ctl->tr_entry[(UINT32)RTMP_GET_PACKET_WCID(pPacket)];
+ 
+ 		if (pTxBlk->tr_entry->wdev != pTxBlk->wdev) {
++#ifdef CONFIG_MTK_AP_BRIDGE
++			if (mtk_ap_plain_ap(pTxBlk->wdev)) {
++				RELEASE_NDIS_PACKET(pAd, pPacket, NDIS_STATUS_FAILURE);
++				return NDIS_STATUS_FAILURE;
++			}
++#endif
+ 			/* MTWF_DBG(pAd, DBG_CAT_TX, DBG_SUBCAT_ALL, DBG_LVL_DEBUG, "correct wdev!\n"); */
+ 			pTxBlk->wdev = pTxBlk->tr_entry->wdev;
+ 		}
+--- a/mt_wifi/embedded/common/rtmp_init.c
++++ b/mt_wifi/embedded/common/rtmp_init.c
+@@ -339,6 +339,19 @@
+ 
+ INT32 WfHifSysExit(RTMP_ADAPTER *pAd)
+ {
++#ifdef CONFIG_MTK_AP_BRIDGE
++	ERR_RECOVERY_CTRL_T *c = &pAd->ErrRecoveryCtl;
++	struct mtk_cpu_lifetime lifetime;
++	mtk_cpu_destruct_enter(&lifetime);
++	if (c->cpu_hif_live) {
++		if (chip_set_hif_dma(pAd, DMA_TX_RX, FALSE) != TRUE ||
++		    !chip_wait_hif_dma_idle(pAd, ALL_DMA, 200, 1000))
++			mtk_cpu_dma_fatal(MTK_CPU_DMA_STOP_FAILED, -ETIMEDOUT);
++		c->cpu_hif_quiet = true;
++	}
++	if (mtk_wifi_cpu_queues_stop(pAd))
++		mtk_cpu_dma_fatal(MTK_CPU_DMA_STOP_FAILED, -EIO);
++#endif
+ 
+ 	WLAN_HOOK_CALL(WLAN_HOOK_HIF_EXIT, pAd, NULL);
+ 	hif_reset_task_group(pAd->hdev_ctrl);
+@@ -354,6 +367,12 @@
+ 	hif_dma_reset(pAd->hdev_ctrl);
+ #ifdef CONFIG_FWOWN_SUPPORT
+ 	FwOwn(pAd);
++#endif
++#ifdef CONFIG_MTK_AP_BRIDGE
++	if (!c->cpu_ser_active && c->cpu_hif_live) {
++		c->cpu_hif_live = false;
++	}
++	mtk_cpu_destruct_exit(&lifetime);
+ #endif
+ 	return 0;
+ }
+@@ -3088,7 +3107,7 @@
+ }
+ 
+ 
+-BOOLEAN RtmpRaDevCtrlExit(IN VOID *pAdSrc)
++static BOOLEAN RtmpRaDevCtrlExit_impl(IN VOID *pAdSrc)
+ {
+ 	RTMP_ADAPTER *pAd = (RTMP_ADAPTER *)pAdSrc;
+ 	INT index;
+@@ -3132,6 +3151,19 @@
+ 	wpf_config_exit(pAd);
+ 	RTMPFreeAdapter(pAd);
+ 	return TRUE;
++}
++
++BOOLEAN RtmpRaDevCtrlExit(IN VOID *pAdSrc)
++{
++#ifdef CONFIG_MTK_AP_BRIDGE
++	struct mtk_cpu_lifetime lifetime;
++	mtk_cpu_destruct_enter(&lifetime);
++#endif
++	BOOLEAN result = RtmpRaDevCtrlExit_impl(pAdSrc);
++#ifdef CONFIG_MTK_AP_BRIDGE
++	mtk_cpu_destruct_exit(&lifetime);
++#endif
++	return result;
+ }
+ 
+ 
+--- a/mt_wifi/embedded/common/rtmp_init_inf.c
++++ b/mt_wifi/embedded/common/rtmp_init_inf.c
+@@ -210,6 +210,46 @@
+ }
+ 
+ 
++#ifdef CONFIG_MTK_AP_BRIDGE
++/* Initialized-stage bits prevent both a partial-init call through NULL ops
++ * and a second exit after a WfInit-owned HIF error unwind. */
++int mtk_wifi_cpu_queues_stop(RTMP_ADAPTER *ad)
++{
++	ERR_RECOVERY_CTRL_T *c = &ad->ErrRecoveryCtl;
++	int ret;
++	if (c->cpu_tm_live) {
++		ret = tm_exit(ad);
++		if (ret) return ret < 0 ? ret : -EIO;
++		c->cpu_tm_live = false;
++	}
++	if (c->cpu_qm_live) {
++		ret = qm_exit(ad);
++		if (ret) return ret < 0 ? ret : -EIO;
++		c->cpu_qm_live = false;
++	}
++	return 0;
++}
++
++static void mtk_wifi_cpu_init_abort(RTMP_ADAPTER *ad, bool wf_ready)
++{
++	ERR_RECOVERY_CTRL_T *c = &ad->ErrRecoveryCtl;
++	/* A completed WfInit has valid lower-layer ownership; stop it checked.
++ * An incomplete WfInit already unwound its initialized HIF itself. */
++	if (wf_ready && c->cpu_hif_live) {
++		chip_interrupt_disable(ad);
++		if (chip_set_hif_dma(ad, DMA_TX_RX, FALSE) != TRUE ||
++		    !chip_wait_hif_dma_idle(ad, ALL_DMA, 200, 1000))
++			mtk_cpu_dma_fatal(MTK_CPU_DMA_STOP_FAILED, -ETIMEDOUT);
++		c->cpu_hif_quiet = true;
++	} else if (!wf_ready && c->cpu_hif_live) {
++		mtk_cpu_dma_fatal(MTK_CPU_DMA_PROOF_LOST, -EPROTO);
++	}
++	if (mtk_wifi_cpu_queues_stop(ad))
++		mtk_cpu_dma_fatal(MTK_CPU_DMA_STOP_FAILED, -EIO);
++	if (wf_ready) WfSysPosExit(ad);
++}
++#endif
++
+ static INT rtmp_sys_init(RTMP_ADAPTER *pAd, RTMP_STRING *pHostName)
+ {
+ 	NDIS_STATUS status;
+@@ -264,12 +304,18 @@
+ 
+ 	if (status)
+ 		goto err2;
++#ifdef CONFIG_MTK_AP_BRIDGE
++	pAd->ErrRecoveryCtl.cpu_qm_live = true;
++#endif
+ 
+ 	/* TM init */
+ 	status = tm_init(pAd);
+ 
+ 	if (status)
+ 		goto err2;
++#ifdef CONFIG_MTK_AP_BRIDGE
++	pAd->ErrRecoveryCtl.cpu_tm_live = true;
++#endif
+ 
+ #ifdef FQ_SCH_SUPPORT
+ 	if (pAd->fq_ctrl.enable & FQ_NEED_ON)
+@@ -279,6 +325,10 @@
+ 
+ 	return TRUE;
+ err2:
++#ifdef CONFIG_MTK_AP_BRIDGE
++	if (mtk_wifi_cpu_queues_stop(pAd))
++		mtk_cpu_dma_fatal(MTK_CPU_DMA_STOP_FAILED, -EIO);
++#endif
+ 	rtmp_cfg_exit(pAd);
+ err1:
+ 	HwCtrlExit(pAd);
+@@ -458,6 +508,9 @@
+ {
+ 	RTMP_ADAPTER *pAd = (RTMP_ADAPTER *)pAdSrc;
+ 	NDIS_STATUS Status;
++#ifdef CONFIG_MTK_AP_BRIDGE
++	bool cpu_wf_ready = false;
++#endif
+ 	/* UCHAR EDCCACtrl; */
+ 	UCHAR ucBandIdx = 0;
+ 	struct _RTMP_CHIP_CAP *cap = NULL;
+@@ -536,6 +589,9 @@
+ 		MTWF_DBG(pAd, DBG_CAT_INIT, DBG_SUBCAT_ALL, DBG_LVL_ERROR, "WfInit faild!!, ret=%d, cap=%p\n", Status, cap);
+ 		goto err2;
+ 	}
++#ifdef CONFIG_MTK_AP_BRIDGE
++	cpu_wf_ready = true;
++#endif
+ 
+ 	/* initialize MLME*/
+ 	Status = MlmeInit(pAd);
+@@ -750,6 +806,9 @@
+ 	MlmeHalt(pAd);
+ 	RTMP_AllTimerListRelease(pAd);
+ err2:
++#ifdef CONFIG_MTK_AP_BRIDGE
++	mtk_wifi_cpu_init_abort(pAd, cpu_wf_ready);
++#endif
+ 	rtmp_sys_exit(pAd);
+ 	MTWF_DBG(pAd, DBG_CAT_INIT, DBG_SUBCAT_ALL, DBG_LVL_ERROR, "!!! mt_wifi_init  fail !!!\n");
+ 	return FALSE;
+@@ -919,7 +978,7 @@
+ }
+ 
+ 
+-VOID RTMPDrvClose(VOID *pAdSrc, VOID *net_dev)
++static VOID RTMPDrvClose_impl(VOID *pAdSrc, VOID *net_dev)
+ {
+ 	RTMP_ADAPTER *pAd = (RTMP_ADAPTER *)pAdSrc;
+ 	struct MCU_CTRL *prCtl = NULL;
+@@ -1188,11 +1247,17 @@
+ 	RTMPResetBackOffParam(pAd);
+ #endif
+ 
++	/* Stop queue producers before HIF/IRQ/ring destruction. */
++#ifdef CONFIG_MTK_AP_BRIDGE
++	if (mtk_wifi_cpu_queues_stop(pAd))
++		mtk_cpu_dma_fatal(MTK_CPU_DMA_STOP_FAILED, -EIO);
++#else
+ 	/* tm exit */
+ 	tm_exit(pAd);
+ 
+ 	/* qm exit */
+ 	qm_exit(pAd);
++#endif
+ 
+ 	tr_ctl_exit(pAd);
+ 
+@@ -1344,6 +1409,19 @@
+ 	Nop_List_Backup(pAd);
+ }
+ 
++VOID RTMPDrvClose(VOID *pAdSrc, VOID *net_dev)
++{
++#ifdef CONFIG_MTK_AP_BRIDGE
++	struct mtk_cpu_lifetime lifetime;
++	mtk_cpu_destruct_enter(&lifetime);
++	mtk_ap_adapter_block((RTMP_ADAPTER *)pAdSrc);
++#endif
++	RTMPDrvClose_impl(pAdSrc, net_dev);
++#ifdef CONFIG_MTK_AP_BRIDGE
++	mtk_cpu_destruct_exit(&lifetime);
++#endif
++}
++
+ PNET_DEV RtmpPhyNetDevMainCreate(VOID *pAdSrc)
+ {
+ 	RTMP_ADAPTER *pAd = (RTMP_ADAPTER *)pAdSrc;
+--- a/mt_wifi/embedded/common/token.c
++++ b/mt_wifi/embedded/common/token.c
+@@ -672,12 +672,31 @@
+ {
+ 	UINT32 token_id;
+ 
++#ifdef CONFIG_MTK_AP_BRIDGE
++	if (!que || !READ_ONCE(que->pkt_token))
++		return 0xffffffffU;
++	/* Reservation is not publication. WARP publishes the returned ID only
++	 * after this call completes. All init/refill producers must be drained
++	 * by checked STOP before token_rx_deinit may read/free this queue.
++	 */
++	do {
++		token_id = atomic_read(&que->cur_free_idx);
++		if (token_id >= READ_ONCE(que->pkt_tkid_cnt))
++			return 0xffffffffU;
++	} while ((UINT32)atomic_cmpxchg(&que->cur_free_idx, token_id,
++					 token_id + 1) != token_id);
++#else
+ 	token_id = atomic_read(&que->cur_free_idx);
++#endif
+ 	que->pkt_token[token_id].pkt_buf = pkt;
+ 	que->pkt_token[token_id].dma_buf.AllocSize = alloc_size;
+ 	que->pkt_token[token_id].dma_buf.AllocVa = alloc_va;
+ 	que->pkt_token[token_id].dma_buf.AllocPa = alloc_pa;
++#ifdef CONFIG_MTK_AP_BRIDGE
++	smp_wmb();
++#else
+ 	atomic_inc(&que->cur_free_idx);
++#endif
+ 
+ 	return token_id;
+ }
+--- a/mt_wifi/embedded/common/wdev.c
++++ b/mt_wifi/embedded/common/wdev.c
+@@ -546,6 +546,11 @@
+ 	wdev->func_idx = func_idx;
+ 	wdev->func_dev = func_dev;
+ 	wdev->sys_handle = sys_handle;
++
++#ifdef CONFIG_MTK_AP_BRIDGE
++	if (mtk_ap_wdev_init(pAd, wdev))
++		return FALSE;
++#endif
+ 	wdev->tr_tb_idx = WCID_INVALID;
+ #ifdef SW_CONNECT_SUPPORT
+ 	wdev->hw_bmc_wcid = WCID_INVALID;
+@@ -580,8 +585,12 @@
+ #endif
+ 	init_vie_ctrl(wdev);
+ 
+-	if (wdev_idx < 0)
++	if (wdev_idx < 0) {
++#ifdef CONFIG_MTK_AP_BRIDGE
++		mtk_ap_wdev_exit(pAd, wdev);
++#endif
+ 		return FALSE;
++	}
+ 
+ 	if (wdev_type != WDEV_TYPE_REPEATER)
+ 		hc_obj_init(wdev, wdev_idx);
+@@ -668,6 +677,9 @@
+  */
+ INT32 wdev_deinit(RTMP_ADAPTER *pAd, struct wifi_dev *wdev)
+ {
++#ifdef CONFIG_MTK_AP_BRIDGE
++	mtk_ap_wdev_block(pAd, wdev);
++#endif
+ 	MTWF_DBG(pAd, DBG_CAT_AP, DBG_SUBCAT_ALL, DBG_LVL_INFO, "(caller:%pS), wdev(%d)\n",
+ 			 OS_TRACE, wdev->wdev_idx);
+ 
+@@ -681,6 +693,9 @@
+ 		hc_obj_exit(wdev);
+ 	}
+ 	wdev_idx_unreg(pAd, wdev);
++#ifdef CONFIG_MTK_AP_BRIDGE
++	mtk_ap_wdev_exit(pAd, wdev);
++#endif
+ 	return TRUE;
+ }
+ 
+--- a/mt_wifi/embedded/fsm/ap_mgmt_assoc.c
++++ b/mt_wifi/embedded/fsm/ap_mgmt_assoc.c
+@@ -3084,7 +3084,7 @@
+ 	MiniportMMRequest(pAd, 0, pOutBuffer, FrameLen);
+ 
+ #ifdef WHNAT_SUPPORT
+-#ifdef CONFIG_FAST_NAT_SUPPORT
++#if defined(CONFIG_FAST_NAT_SUPPORT) && !defined(CONFIG_MTK_AP_BRIDGE)
+ 	if (pAd->CommonCfg.whnat_en) {
+ 		if (StatusCode == MLME_SUCCESS && (pEntry->Sst == SST_ASSOC)) {
+ 			UCHAR i;
+--- a/mt_wifi/embedded/fsm/sta_mgmt_cntl.c
++++ b/mt_wifi/embedded/fsm/sta_mgmt_cntl.c
+@@ -2532,7 +2532,7 @@
+ #endif
+ 			wf_apcli_active_links++;
+ 
+-#ifdef CONFIG_FAST_NAT_SUPPORT
++#if defined(CONFIG_FAST_NAT_SUPPORT) && !defined(CONFIG_MTK_AP_BRIDGE)
+ 			if ((wf_apcli_active_links >= 2)
+ 				&& (ra_sw_nat_hook_rx != NULL)
+ 				&& (wf_ra_sw_nat_hook_rx_bkup == NULL)) {
+@@ -3770,7 +3770,7 @@
+ 
+ 
+ #if defined(CONFIG_WIFI_PKT_FWD) || defined(CONFIG_WIFI_PKT_FWD_MODULE)
+-#ifdef CONFIG_FAST_NAT_SUPPORT
++#if defined(CONFIG_FAST_NAT_SUPPORT) && !defined(CONFIG_MTK_AP_BRIDGE)
+ 					if ((wf_apcli_active_links < 2) && (ra_sw_nat_hook_rx == NULL) && (wf_ra_sw_nat_hook_rx_bkup != NULL)) {
+ 						ra_sw_nat_hook_rx = wf_ra_sw_nat_hook_rx_bkup;
+ 						wf_ra_sw_nat_hook_rx_bkup = NULL;
+@@ -4086,7 +4086,7 @@
+ 	/*delete ppe entry when apcli disconnect, avoid 4-way handshaking failure*/
+ #ifdef WHNAT_SUPPORT
+ 	if (pAd->CommonCfg.whnat_en) {
+-#ifdef CONFIG_FAST_NAT_SUPPORT
++#if defined(CONFIG_FAST_NAT_SUPPORT) && !defined(CONFIG_MTK_AP_BRIDGE)
+ 		if (ppe_del_entry_by_mac != NULL) {
+ 			MTWF_DBG(pAd, DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_NOTICE,
+ 				"WHNAT Enable, Need Delete HNAT Entry When Disconnect!\n");
+--- a/mt_wifi/embedded/hw_ctrl/hw_ctrl.c
++++ b/mt_wifi/embedded/hw_ctrl/hw_ctrl.c
+@@ -1125,6 +1125,253 @@
+ 
+ }
+ 
++#ifdef CONFIG_MTK_AP_BRIDGE
++/* The request permission is a linearization point, not a stale boolean read.
++ * ABORT changes 0/1 -> 2 permanently; release must never overwrite that 2. */
++static int mtk_wifi_ser_grant(ERR_RECOVERY_CTRL_T *c)
++{
++	if (READ_ONCE(c->cpu_ser_error) || READ_ONCE(c->warp_request.cancelled) ||
++	    time_after_eq(jiffies, c->warp_request.deadline))
++		return -ECANCELED;
++	return cmpxchg(&c->warp_request.permission, 0, 1) == 0 ? 0 : -ECANCELED;
++}
++
++static void mtk_wifi_ser_release(ERR_RECOVERY_CTRL_T *c)
++{
++	cmpxchg(&c->warp_request.permission, 1, 0);
++}
++
++int mtk_wifi_cpu_ser_phase(RTMP_ADAPTER *ad, u32 phase)
++{
++	ERR_RECOVERY_CTRL_T *c = &ad->ErrRecoveryCtl;
++	struct mtk_warp_ser_request *r = &c->warp_request;
++	if (READ_ONCE(c->cpu_ser_error) || READ_ONCE(r->cancelled) ||
++	    READ_ONCE(r->permission) == 2 || time_after_eq(jiffies, r->deadline))
++		return -ECANCELED;
++	r->phase = phase;
++	r->result = -EINPROGRESS;
++	if (phase == MTK_WARP_SER_QUIESCE || phase == MTK_WARP_SER_STOP)
++		r->stop_proven = 0;
++	WLAN_HOOK_CALL(WLAN_HOOK_SER, ad, c);
++	if (READ_ONCE(c->cpu_ser_error) || READ_ONCE(r->cancelled) ||
++	    READ_ONCE(r->permission) == 2)
++		return -ECANCELED;
++	return r->result > 0 ? -EIO : r->result;
++}
++
++static NTSTATUS mtk_wifi_ser_fail(RTMP_ADAPTER *ad, int error)
++{
++	ERR_RECOVERY_CTRL_T *c = &ad->ErrRecoveryCtl;
++	if (error >= 0) error = -EIO;
++	mtk_wifi_cpu_ser_watchdog_cancel(ad);
++	WRITE_ONCE(c->cpu_ser_error, error);
++	WRITE_ONCE(c->warp_request.cancelled, 1);
++	xchg(&c->warp_request.permission, 2);
++	mtk_cpu_profile_note_fault(error);
++	if (atomic_xchg(&c->notify_fe, 0))
++		mtk_cpu_wifi_stop_result(ad, c->fe_ser_cookie, error, false);
++	/* W proof never authorizes freeing a newly exposed D HIF. */
++	if (!c->warp_request.stop_proven || !c->cpu_hif_quiet)
++		mtk_cpu_dma_fatal(MTK_CPU_DMA_STOP_FAILED, error);
++	if (c->cpu_cleanup) {
++		mtk_cpu_ser_cleanup_end(c->warp_request.cookie);
++		c->cpu_cleanup = false;
++	}
++	if (c->cpu_ser_active) {
++		mtk_cpu_wifi_ser_end(ad, c->warp_request.cookie);
++		c->cpu_ser_active = false;
++	}
++	return NDIS_STATUS_FAILURE; /* QUIESCENT_FAILED, sticky until reboot. */
++}
++
++static NTSTATUS mtk_wifi_cpu_recover(RTMP_ADAPTER *ad)
++{
++	ERR_RECOVERY_CTRL_T *c = &ad->ErrRecoveryCtl;
++	struct mtk_warp_ser_request *r = &c->warp_request;
++	u32 status = ad->HwCtrl.ser_status;
++	u32 stage = READ_ONCE(c->errRecovStage);
++	unsigned long irq_flags;
++	int ret;
++	if (READ_ONCE(c->cpu_ser_error))
++		return c->cpu_ser_active ? mtk_wifi_ser_fail(ad, c->cpu_ser_error) : NDIS_STATUS_FAILURE;
++	switch (stage) {
++	case ERR_RECOV_STAGE_STOP_IDLE:
++		if (!(status & ERROR_DETECT_STOP_PDMA)) return NDIS_STATUS_INVALID_DATA;
++		spin_lock_irqsave(&c->cpu_ser_lock, irq_flags);
++		if (c->cpu_ser_error || c->cpu_ser_active) {
++			spin_unlock_irqrestore(&c->cpu_ser_lock, irq_flags);
++			return NDIS_STATUS_FAILURE;
++		}
++		memset(r, 0, sizeof(*r));
++		ret = mtk_cpu_wifi_ser_begin(ad, atomic_read(&c->notify_fe) ? c->fe_ser_cookie : 0, &r->cookie);
++		if (!ret) c->cpu_ser_active = true;
++		r->deadline = jiffies + msecs_to_jiffies(5000);
++		spin_unlock_irqrestore(&c->cpu_ser_lock, irq_flags);
++		if (ret) return mtk_wifi_ser_fail(ad, ret);
++		mtk_wifi_cpu_ser_watchdog_start(ad, r->cookie);
++		mtk_ap_adapter_ser_drain(ad);
++		ret = mtk_wifi_cpu_ser_phase(ad, MTK_WARP_SER_QUIESCE);
++		if (ret) return mtk_wifi_ser_fail(ad, ret);
++		ret = mtk_wifi_ser_grant(c);
++		if (ret) return mtk_wifi_ser_fail(ad, ret);
++		ErrRecoverySetRecovStage(c, ERR_RECOV_STAGE_STOP_IDLE_DONE);
++		ErrRecoverySetStopRxDMA(c, FALSE);
++		ret = ErrRecoveryMcuIntEvent(ad, MCU_INT_PDMA0_STOP_DONE) == TRUE ? 0 : -EIO;
++		mtk_wifi_ser_release(c);
++		if (ret) return mtk_wifi_ser_fail(ad, ret);
++		/* Preserve the existing bounded MMIO-off interval after N9 stop. */
++		{
++			PCI_HIF_T *hif = hc_get_hif_ctrl(ad->hdev_ctrl);
++			ULONG flags = 0;
++			RTMP_SPIN_LOCK_IRQSAVE(&hif->io_remap_lock, &flags);
++			hif->bPCIclkOff = TRUE;
++			RTMP_SPIN_UNLOCK_IRQRESTORE(&hif->io_remap_lock, &flags);
++			RtmpusecDelay(100 * 1000);
++			RTMP_SPIN_LOCK_IRQSAVE(&hif->io_remap_lock, &flags);
++			hif->bPCIclkOff = FALSE;
++			RTMP_SPIN_UNLOCK_IRQRESTORE(&hif->io_remap_lock, &flags);
++		}
++		if (READ_ONCE(r->cancelled)) return mtk_wifi_ser_fail(ad, -ECANCELED);
++		ErrRecoverySetRecovStage(c, ERR_RECOV_STAGE_STOP_PDMA0);
++		return NDIS_STATUS_SUCCESS;
++	case ERR_RECOV_STAGE_STOP_PDMA0:
++		if (!(status & ERROR_DETECT_RESET_DONE)) return NDIS_STATUS_INVALID_DATA;
++		ret = mtk_wifi_cpu_ser_phase(ad, MTK_WARP_SER_STOP);
++		if (ret || !r->stop_proven) return mtk_wifi_ser_fail(ad, ret ?: -EPROTO);
++		ErrRecoverySetStopRxDMA(c, TRUE);
++		ret = mtk_wifi_ser_grant(c);
++		if (ret) return mtk_wifi_ser_fail(ad, ret);
++		ret = chip_set_hif_dma(ad, DMA_TX_RX, FALSE) == TRUE ? 0 : -EIO;
++		if (!ret) {
++			int ms = jiffies_to_msecs(r->deadline - jiffies);
++			int rounds = ms > 402 ? 200 : ms / 2 - 1;
++			if (rounds < 1 || !chip_wait_hif_dma_idle(ad, ALL_DMA, rounds, 1000)) ret = -ETIMEDOUT;
++		}
++		if (!ret) c->cpu_hif_quiet = true;
++		mtk_wifi_ser_release(c);
++		if (ret || time_after_eq(jiffies, r->deadline)) return mtk_wifi_ser_fail(ad, ret ?: -ETIMEDOUT);
++		if (atomic_xchg(&c->notify_fe, 0)) {
++			ret = mtk_wifi_ser_grant(c);
++			if (ret) return mtk_wifi_ser_fail(ad, ret);
++			ret = mtk_cpu_wifi_stop_result(ad, c->fe_ser_cookie, 0, true);
++			mtk_wifi_ser_release(c);
++			if (ret) return mtk_wifi_ser_fail(ad, ret);
++			if (!wait_for_completion_timeout(&c->fe_reset_done, msecs_to_jiffies(10000)))
++				return mtk_wifi_ser_fail(ad, -ETIMEDOUT);
++			if (READ_ONCE(c->fe_result)) return mtk_wifi_ser_fail(ad, c->fe_result);
++		}
++		/* Independent WiFi SER has no FE wait or synthetic FE ACK. */
++		r->deadline = jiffies + msecs_to_jiffies(5000);
++		ret = mtk_wifi_cpu_ser_phase(ad, MTK_WARP_SER_CLEANUP);
++		if (ret) return mtk_wifi_ser_fail(ad, ret);
++		c->cpu_saved_flags = ad->Flags;
++		RTMP_CLEAR_FLAG(ad, fRTMP_ADAPTER_START_UP | fRTMP_ADAPTER_MCU_SEND_IN_BAND_CMD);
++		ret = mtk_cpu_ser_cleanup_begin(r->cookie);
++		if (ret) return mtk_wifi_ser_fail(ad, ret);
++		c->cpu_cleanup = true;
++		ret = mtk_wifi_ser_grant(c);
++		if (ret) return mtk_wifi_ser_fail(ad, ret);
++		{
++			PKT_TOKEN_CB *token = hc_get_ct_cb(ad->hdev_ctrl);
++			ret = mtk_wifi_cpu_queues_stop(ad);
++			if (!ret) {
++				chip_interrupt_disable(ad);
++				hif_reset_task_group(ad->hdev_ctrl);
++				hif_free_irq(ad->hdev_ctrl);
++				hif_reset_txrx_mem(ad->hdev_ctrl);
++				token_deinit(&token);
++			}
++		}
++		mtk_wifi_ser_release(c);
++		if (ret) return mtk_wifi_ser_fail(ad, ret);
++		ret = WfHifInit(ad);
++		if (!ret) {
++			ret = qm_init(ad);
++			if (!ret) c->cpu_qm_live = true;
++		}
++		if (!ret) {
++			ret = tm_init(ad);
++			if (!ret) c->cpu_tm_live = true;
++		}
++		if (ret) return mtk_wifi_ser_fail(ad, ret);
++		ret = mtk_wifi_cpu_ser_phase(ad, MTK_WARP_SER_RESUME);
++		if (ret) return mtk_wifi_ser_fail(ad, ret);
++		ret = mtk_wifi_ser_grant(c);
++		if (ret) return mtk_wifi_ser_fail(ad, ret);
++		RTMP_SET_FLAG(ad, c->cpu_saved_flags &
++			(fRTMP_ADAPTER_START_UP | fRTMP_ADAPTER_MCU_SEND_IN_BAND_CMD));
++		chip_interrupt_enable(ad);
++		hif_dma_enable(ad->hdev_ctrl);
++		ret = chip_set_hif_dma(ad, DMA_TX_RX, TRUE) == TRUE ? 0 : -EIO;
++		if (ret) {
++			mtk_wifi_ser_release(c);
++			return mtk_wifi_ser_fail(ad, ret);
++		}
++		ErrRecoverySetRecovStage(c, ERR_RECOV_STAGE_RESET_PDMA0);
++		ErrRecoverySetStopRxDMA(c, FALSE);
++		ret = ErrRecoveryMcuIntEvent(ad, MCU_INT_PDMA0_INIT_DONE) == TRUE ? 0 : -EIO;
++		mtk_wifi_ser_release(c);
++		if (ret) return mtk_wifi_ser_fail(ad, ret);
++		mtk_cpu_ser_cleanup_end(r->cookie);
++		c->cpu_cleanup = false;
++		return NDIS_STATUS_SUCCESS;
++	case ERR_RECOV_STAGE_RESET_PDMA0:
++		if (!(status & ERROR_DETECT_RECOVERY_DONE)) return NDIS_STATUS_INVALID_DATA;
++		ret = mtk_cpu_ser_cleanup_begin(r->cookie);
++		if (ret) return mtk_wifi_ser_fail(ad, ret);
++		c->cpu_cleanup = true;
++		ret = mtk_wifi_ser_grant(c);
++		if (ret) return mtk_wifi_ser_fail(ad, ret);
++		ErrRecoverySetRecovStage(c, ERR_RECOV_STAGE_WAIT_N9_NORMAL);
++		ret = ErrRecoveryMcuIntEvent(ad, MCU_INT_PDMA0_RECOVERY_DONE) == TRUE ? 0 : -EIO;
++		mtk_wifi_ser_release(c);
++		if (ret) return mtk_wifi_ser_fail(ad, ret);
++		mtk_cpu_ser_cleanup_end(r->cookie);
++		c->cpu_cleanup = false;
++		return NDIS_STATUS_SUCCESS;
++	case ERR_RECOV_STAGE_WAIT_N9_NORMAL:
++		if (!(status & ERROR_DETECT_N9_NORMAL_STATE) || (status & ERROR_DETECT_STOP_PDMA))
++			return mtk_wifi_ser_fail(ad, -EPROTO);
++		ret = mtk_wifi_cpu_ser_phase(ad, MTK_WARP_SER_COMPLETE);
++		if (ret) return mtk_wifi_ser_fail(ad, ret);
++		mtk_wifi_cpu_ser_watchdog_cancel(ad);
++		ret = mtk_cpu_ser_cleanup_begin(r->cookie);
++		if (ret) return mtk_wifi_ser_fail(ad, ret);
++		c->cpu_cleanup = true;
++		ret = mtk_wifi_ser_grant(c);
++		if (ret) return mtk_wifi_ser_fail(ad, ret);
++		ErrRecoveryEndDriverRestore(ad);
++		ba_refresh_bar_all(ad);
++		{
++			unsigned int i;
++			for (i = 0; i < WDEV_NUM_MAX; i++) {
++				struct wifi_dev *wdev = ad->wdev_list[i];
++				if (wdev && HcIsRadioAcq(wdev) && wdev->wdev_type == WDEV_TYPE_AP) {
++					UpdateBeaconHandler(ad, wdev, BCN_UPDATE_ALL_AP_RENEW);
++					break;
++				}
++			}
++		}
++		mtk_wifi_ser_release(c);
++		mtk_cpu_ser_cleanup_end(r->cookie);
++		c->cpu_cleanup = false;
++		spin_lock_irqsave(&c->cpu_ser_lock, irq_flags);
++		if (c->cpu_ser_error || r->cancelled || r->permission == 2) {
++			spin_unlock_irqrestore(&c->cpu_ser_lock, irq_flags);
++			return mtk_wifi_ser_fail(ad, -ECANCELED);
++		}
++		mtk_cpu_wifi_ser_end(ad, r->cookie);
++		c->cpu_ser_active = false;
++		WRITE_ONCE(c->fe_ser_cookie, 0);
++		ErrRecoverySetRecovStage(c, ERR_RECOV_STAGE_STOP_IDLE);
++		spin_unlock_irqrestore(&c->cpu_ser_lock, irq_flags);
++		return NDIS_STATUS_SUCCESS;
++	default:
++		return mtk_wifi_ser_fail(ad, -EPROTO);
++	}
++}
++#endif
++
+ NTSTATUS HwRecoveryFromError(RTMP_ADAPTER *pAd)
+ {
+ 	UINT32 Status;
+@@ -1142,6 +1389,9 @@
+ 
+ 	if (!pAd)
+ 		return NDIS_STATUS_INVALID_DATA;
++#ifdef CONFIG_MTK_AP_BRIDGE
++	return mtk_wifi_cpu_recover(pAd);
++#endif
+ 	pktTokenCb = hc_get_ct_cb(pAd->hdev_ctrl);
+ #ifdef CONFIG_ATE
+ 
+--- a/mt_wifi/embedded/hw_ctrl/hw_ctrl_basic.c
++++ b/mt_wifi/embedded/hw_ctrl/hw_ctrl_basic.c
+@@ -384,6 +384,56 @@
+ 
+ #ifdef MTK_FE_RESET_RECOVER
+ 
++#ifdef CONFIG_MTK_AP_BRIDGE
++/* One timeout only cancels/wakes the existing HwCtrl actor. It never performs
++ * cleanup/reset and cannot cancel another cookie after the old work drains. */
++static void mtk_wifi_cpu_ser_timeout(struct work_struct *work)
++{
++	ERR_RECOVERY_CTRL_T *c = container_of(to_delayed_work(work),
++		ERR_RECOVERY_CTRL_T, cpu_ser_watchdog);
++	RTMP_ADAPTER *ad = container_of(c, RTMP_ADAPTER, ErrRecoveryCtl);
++	unsigned long flags;
++	bool wake = false;
++	spin_lock_irqsave(&c->cpu_ser_lock, flags);
++	if (c->cpu_ser_active && c->cpu_watchdog_cookie &&
++	    c->cpu_watchdog_cookie == c->warp_request.cookie) {
++		WRITE_ONCE(c->cpu_ser_error, -ETIMEDOUT);
++		WRITE_ONCE(c->warp_request.cancelled, 1);
++		xchg(&c->warp_request.permission, 2);
++		c->fe_result = -ETIMEDOUT;
++		complete(&c->fe_reset_done);
++		wake = true;
++	}
++	spin_unlock_irqrestore(&c->cpu_ser_lock, flags);
++	if (wake) RTCMDUp(&ad->HwCtrl.ser_task);
++}
++
++void mtk_wifi_cpu_ser_watchdog_start(RTMP_ADAPTER *ad, u64 cookie)
++{
++	ERR_RECOVERY_CTRL_T *c = &ad->ErrRecoveryCtl;
++	unsigned long flags;
++	spin_lock_irqsave(&c->cpu_ser_lock, flags);
++	c->cpu_watchdog_cookie = cookie;
++	c->cpu_watchdog_drained = false;
++	spin_unlock_irqrestore(&c->cpu_ser_lock, flags);
++	/* mod_delayed_work_on is GPL-only; each old cycle is already drained. */
++	if (!queue_delayed_work(system_wq, &c->cpu_ser_watchdog, msecs_to_jiffies(20000)))
++		mtk_cpu_dma_fatal(MTK_CPU_DMA_CONTROL_RACE, -EALREADY);
++}
++
++void mtk_wifi_cpu_ser_watchdog_cancel(RTMP_ADAPTER *ad)
++{
++	ERR_RECOVERY_CTRL_T *c = &ad->ErrRecoveryCtl;
++	unsigned long flags;
++	spin_lock_irqsave(&c->cpu_ser_lock, flags);
++	c->cpu_watchdog_cookie = 0;
++	spin_unlock_irqrestore(&c->cpu_ser_lock, flags);
++	/* Called by HwCtrl without RTNL, never by the timeout callback. */
++	cancel_delayed_work_sync(&c->cpu_ser_watchdog);
++	c->cpu_watchdog_drained = true;
++}
++#endif
++
+ static int mtk_fe_event(struct notifier_block *this, unsigned long event, void *ptr)
+ {
+ 	struct mtk_notifier_block *nb = (struct mtk_notifier_block *)this;
+@@ -393,6 +443,68 @@
+ 	struct _RTMP_CHIP_CAP *cap = hc_get_chip_cap(pAd->hdev_ctrl);
+ #endif /* WIFI_UNIFIED_COMMAND */
+ 
++#ifdef CONFIG_MTK_AP_BRIDGE
++	{
++		unsigned long flags;
++		int err = 0;
++		u64 cookie;
++		/* ABORT is valid before START_UP and never waits for HwCtrl/RTNL. */
++		if (event == MTK_FE_CPU_PROFILE_ABORT) {
++			spin_lock_irqsave(&pErrRecoveryCtrl->cpu_ser_lock, flags);
++			pErrRecoveryCtrl->cpu_ser_error = -ECANCELED;
++			pErrRecoveryCtrl->fe_result = -ECANCELED;
++			WRITE_ONCE(pErrRecoveryCtrl->warp_request.cancelled, 1);
++			xchg(&pErrRecoveryCtrl->warp_request.permission, 2);
++			complete(&pErrRecoveryCtrl->fe_reset_done);
++			spin_unlock_irqrestore(&pErrRecoveryCtrl->cpu_ser_lock, flags);
++			return NOTIFY_OK;
++		}
++		if (event != MTK_FE_START_RESET && event != MTK_FE_RESET_DONE)
++			return NOTIFY_DONE;
++		cookie = mtk_cpu_fe_ser_cookie();
++		spin_lock_irqsave(&pErrRecoveryCtrl->cpu_ser_lock, flags);
++		if (event == MTK_FE_RESET_DONE) {
++			if (!pErrRecoveryCtrl->cpu_ser_error && cookie &&
++			    cookie == pErrRecoveryCtrl->fe_ser_cookie &&
++			    pErrRecoveryCtrl->cpu_ser_active &&
++			    pErrRecoveryCtrl->warp_request.phase == MTK_WARP_SER_STOP &&
++			    pErrRecoveryCtrl->warp_request.stop_proven &&
++			    pErrRecoveryCtrl->fe_result == -EINPROGRESS) {
++				pErrRecoveryCtrl->fe_result = 0;
++				complete(&pErrRecoveryCtrl->fe_reset_done);
++			}
++			spin_unlock_irqrestore(&pErrRecoveryCtrl->cpu_ser_lock, flags);
++			return NOTIFY_OK;
++		}
++		if (!cookie || pErrRecoveryCtrl->cpu_ser_error ||
++		    pErrRecoveryCtrl->cpu_ser_active || pErrRecoveryCtrl->fe_ser_cookie ||
++		    pErrRecoveryCtrl->errRecovStage != ERR_RECOV_STAGE_STOP_IDLE ||
++		    !pErrRecoveryCtrl->cpu_hif_live ||
++		    !RTMP_TEST_FLAG(pAd, fRTMP_ADAPTER_START_UP)) {
++			spin_unlock_irqrestore(&pErrRecoveryCtrl->cpu_ser_lock, flags);
++			return notifier_from_errno(-EBUSY);
++		}
++		reinit_completion(&pErrRecoveryCtrl->fe_reset_done);
++		pErrRecoveryCtrl->fe_result = -EINPROGRESS;
++		pErrRecoveryCtrl->fe_ser_cookie = cookie;
++		atomic_set(&pErrRecoveryCtrl->notify_fe, 1);
++		spin_unlock_irqrestore(&pErrRecoveryCtrl->cpu_ser_lock, flags);
++#ifdef WIFI_UNIFIED_COMMAND
++		if (cap->uni_cmd_support)
++			err = UniCmdSER(pAd, UNI_SER_ACTION_SET_TRIGGER, SER_SET_L1_RECOVER, DBDC_BAND0);
++		else
++#endif
++			err = CmdExtSER(pAd, SER_ACTION_RECOVER, SER_SET_L1_RECOVER, DBDC_BAND0);
++		if (err) {
++			WRITE_ONCE(pErrRecoveryCtrl->cpu_ser_error, -EIO);
++			WRITE_ONCE(pErrRecoveryCtrl->warp_request.cancelled, 1);
++			xchg(&pErrRecoveryCtrl->warp_request.permission, 2);
++			mtk_cpu_wifi_stop_result(pAd, cookie, -EIO, false);
++			return notifier_from_errno(-EIO);
++		}
++		return NOTIFY_OK;
++	}
++#endif
+ 	if (!RTMP_TEST_FLAG(pAd, fRTMP_ADAPTER_START_UP))
+ 		return NOTIFY_DONE;
+ 
+@@ -428,6 +540,15 @@
+ 
+ 	init_completion(&pErrRecoveryCtrl->fe_reset_done);
+ 	atomic_set(&pErrRecoveryCtrl->notify_fe, 0);
++#ifdef CONFIG_MTK_AP_BRIDGE
++	spin_lock_init(&pErrRecoveryCtrl->cpu_ser_lock);
++	INIT_DELAYED_WORK(&pErrRecoveryCtrl->cpu_ser_watchdog, mtk_wifi_cpu_ser_timeout);
++	pErrRecoveryCtrl->cpu_watchdog_drained = true;
++	pErrRecoveryCtrl->cpu_hif_quiet = true;
++	err = mtk_cpu_wifi_participant_register(pAd);
++	if (err) return err;
++	pErrRecoveryCtrl->cpu_participant_registered = true;
++#endif
+ 
+ 	mtk_nb->priv = pAd;
+ 	mtk_nb->nb.notifier_call = mtk_fe_event;
+@@ -436,6 +557,10 @@
+ 
+ 	if (err)
+ 		return err;
++#ifdef CONFIG_MTK_AP_BRIDGE
++	pErrRecoveryCtrl->cpu_notifier_registered = true;
++	return 0;
++#endif
+ 
+ 	rtnl_lock();
+ 	call_netdevice_notifiers(MTK_WIFI_CHIP_ONLINE, pAd->net_dev);
+@@ -449,6 +574,29 @@
+ 	P_ERR_RECOVERY_CTRL_T pErrRecoveryCtrl = &pAd->ErrRecoveryCtl;
+ 	struct mtk_notifier_block *mtk_nb = &pErrRecoveryCtrl->mtk_nb;
+ 
++#ifdef CONFIG_MTK_AP_BRIDGE
++	if (!pErrRecoveryCtrl->cpu_notifier_registered &&
++	    !pErrRecoveryCtrl->cpu_participant_registered)
++		return;
++	if (!pErrRecoveryCtrl->cpu_watchdog_drained)
++		mtk_cpu_dma_fatal(MTK_CPU_DMA_CONTROL_RACE, -EBUSY);
++	if (pErrRecoveryCtrl->cpu_notifier_registered) {
++		WRITE_ONCE(pErrRecoveryCtrl->cpu_ser_error, -ESHUTDOWN);
++		WRITE_ONCE(pErrRecoveryCtrl->fe_result, -ESHUTDOWN);
++		WRITE_ONCE(pErrRecoveryCtrl->warp_request.cancelled, 1);
++		xchg(&pErrRecoveryCtrl->warp_request.permission, 2);
++		complete(&pErrRecoveryCtrl->fe_reset_done);
++		unregister_netdevice_notifier(&mtk_nb->nb);
++		pErrRecoveryCtrl->cpu_notifier_registered = false;
++	}
++	if (pErrRecoveryCtrl->cpu_participant_registered) {
++		if (pErrRecoveryCtrl->cpu_hif_live || pErrRecoveryCtrl->cpu_participant_live)
++			mtk_cpu_dma_fatal(MTK_CPU_DMA_PROOF_LOST, -EBUSY);
++		mtk_cpu_wifi_participant_unregister(pAd);
++		pErrRecoveryCtrl->cpu_participant_registered = false;
++	}
++	return;
++#endif
+ 	rtnl_lock();
+ 	call_netdevice_notifiers(MTK_WIFI_CHIP_OFFLINE, pAd->net_dev);
+ 	rtnl_unlock();
+--- a/mt_wifi/embedded/hw_ctrl/hw_ctrl_cmd.c
++++ b/mt_wifi/embedded/hw_ctrl/hw_ctrl_cmd.c
+@@ -558,6 +558,13 @@
+ INT IsStopingPdma(struct _ERR_RECOVERY_CTRL_T *pErrRecoveryCtl)
+ #endif /* MT7626_REDUCE_TX_OVERHEAD */
+ {
++#ifdef CONFIG_MTK_AP_BRIDGE
++	/* Admission closes before WARP QUIESCE, while the legacy stage is still
++	 * IDLE. Queued data tasks exit; the distinct SWIRQ SER lane stays alive. */
++	if (READ_ONCE(pErrRecoveryCtl->cpu_ser_active) ||
++	    READ_ONCE(pErrRecoveryCtl->cpu_ser_error))
++		return TRUE;
++#endif
+ 	return (pErrRecoveryCtl->errRecovStage == ERR_RECOV_STAGE_STOP_IDLE) ?
+ 		   FALSE : TRUE;
+ }
+@@ -565,6 +572,11 @@
+ #ifdef WHNAT_SUPPORT
+ INT IsStopingRxDma(struct _ERR_RECOVERY_CTRL_T *pErrRecoveryCtl)
+ {
++#ifdef CONFIG_MTK_AP_BRIDGE
++	if (READ_ONCE(pErrRecoveryCtl->cpu_ser_active) ||
++	    READ_ONCE(pErrRecoveryCtl->cpu_ser_error))
++		return TRUE;
++#endif
+ 	return pErrRecoveryCtl->stop_rx_dma;
+ }
+ #endif
+--- /dev/null
++++ b/mt_wifi/embedded/include/ap_bridge.h
+@@ -0,0 +1,44 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++#ifndef __MT_WIFI_AP_BRIDGE_H
++#define __MT_WIFI_AP_BRIDGE_H
++#ifdef CONFIG_MTK_AP_BRIDGE
++#include <linux/mtk_ap_bridge.h>
++#include "ap_bridge_parse.h"
++#define MTK_AP_SCOPED_READER(name) \
++	struct mtk_ap_bridge_reader name \
++	__attribute__((cleanup(mtk_ap_bridge_exit))) = { 0 }
++
++int mtk_ap_adapter_init(RTMP_ADAPTER *ad, PNET_DEV dev);
++void mtk_ap_adapter_exit(RTMP_ADAPTER *ad);
++void mtk_ap_adapter_block(RTMP_ADAPTER *ad);
++void mtk_ap_adapter_ser_drain(RTMP_ADAPTER *ad);
++int mtk_ap_wdev_init(RTMP_ADAPTER *ad, struct wifi_dev *wdev);
++void mtk_ap_wdev_exit(RTMP_ADAPTER *ad, struct wifi_dev *wdev);
++void mtk_ap_wdev_block(RTMP_ADAPTER *ad, struct wifi_dev *wdev);
++void mtk_ap_netdev_block(PNET_DEV dev);
++int mtk_ap_private_ioctl(struct net_device *dev, struct ifreq *ifr,
++			void __user *data, int cmd);
++bool mtk_ap_config_enter(RTMP_ADAPTER *ad, struct wifi_dev *wdev);
++void mtk_ap_config_exit(RTMP_ADAPTER *ad);
++bool mtk_ap_rx_early_enter(RTMP_ADAPTER *ad, RX_BLK *rx,
++			   struct wifi_dev *wdev);
++void mtk_ap_rx_early_exit(RX_BLK *rx);
++bool mtk_ap_rx_late_enter(RTMP_ADAPTER *ad, struct wifi_dev *wdev,
++			 PNDIS_PACKET pkt, struct mtk_ap_bridge_reader *reader);
++/* -1 drops, 0 is authenticated ordinary data, 1 is a single EAPOL frame. */
++int mtk_ap_rx_authorize(RTMP_ADAPTER *ad, MAC_TABLE_ENTRY *peer, RX_BLK *rx,
++			struct wifi_dev *wdev, const UCHAR *data,
++			unsigned int length, bool ethernet);
++bool mtk_ap_rx_fragment_prepare(RTMP_ADAPTER *ad, MAC_TABLE_ENTRY *peer,
++				RX_BLK *rx, struct wifi_dev *wdev);
++bool mtk_ap_tx_begin(RTMP_ADAPTER *ad, struct wifi_dev *wdev, PNDIS_PACKET pkt,
++		     struct mtk_ap_bridge_reader *reader, bool raw);
++bool mtk_ap_tx_valid(RTMP_ADAPTER *ad, struct wifi_dev *wdev, PNDIS_PACKET pkt,
++		     const struct mtk_ap_bridge_reader *reader);
++bool mtk_ap_tx_queued_valid(RTMP_ADAPTER *ad, struct wifi_dev *wdev,
++			    PNDIS_PACKET pkt);
++bool mtk_ap_tx_enter_queued(RTMP_ADAPTER *ad, struct wifi_dev *wdev,
++			   PNDIS_PACKET pkt, struct mtk_ap_bridge_reader *reader);
++bool mtk_ap_plain_ap(const struct wifi_dev *wdev);
++#endif
++#endif
+--- /dev/null
++++ b/mt_wifi/embedded/include/ap_bridge_parse.h
+@@ -0,0 +1,171 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++#ifndef __AP_BRIDGE_PARSE_H
++#define __AP_BRIDGE_PARSE_H
++
++/* Pure, bounded wire parser: also compiled directly by the host tests. */
++enum apbr_wire_format { APBR_ETHERNET, APBR_LLC, APBR_IEEE80211 };
++enum apbr_wire_kind { APBR_WIRE_INVALID = -1, APBR_WIRE_DATA, APBR_WIRE_EAPOL };
++struct apbr_wire_view {
++	unsigned int type_offset;
++	unsigned int eap_offset;
++	unsigned int eap_length;
++	unsigned int tags;
++};
++
++static inline unsigned int apbr_be16(const unsigned char *p)
++{
++	return ((unsigned int)p[0] << 8) | p[1];
++}
++
++static inline int apbr_is_vlan(unsigned int type)
++{
++	return type == 0x8100 || type == 0x88a8;
++}
++
++static inline int apbr_snap(const unsigned char *p, unsigned int len)
++{
++	return len >= 8 && p[0] == 0xaa && p[1] == 0xaa &&
++		p[2] == 3 && p[3] == 0 && p[4] == 0 &&
++		(p[5] == 0 || p[5] == 0xf8);
++}
++
++static inline enum apbr_wire_kind
++apbr_parse_wire(const unsigned char *p, unsigned int len,
++		enum apbr_wire_format format, struct apbr_wire_view *v)
++{
++	unsigned int off = 0, limit = len, type, body, eap_len;
++	unsigned int fc, hdr;
++	struct apbr_wire_view result = { 0, 0, 0, 0 };
++
++	if (!p || !v)
++		return APBR_WIRE_INVALID;
++	*v = result;
++	if (format == APBR_ETHERNET) {
++		if (len < 14)
++			return APBR_WIRE_INVALID;
++		off = 12;
++		/* IEEE 802.3 length + LLC/SNAP, bounded by the declared MSDU. */
++		if (apbr_be16(p + off) <= 1500) {
++			body = apbr_be16(p + off);
++			if (body > len - 14)
++				return APBR_WIRE_INVALID;
++			if (!apbr_snap(p + 14, body))
++				return APBR_WIRE_DATA;
++			limit = 14 + body;
++			off = 20;
++		}
++	} else {
++		if (format == APBR_IEEE80211) {
++			if (len < 24)
++				return APBR_WIRE_INVALID;
++			fc = p[0] | ((unsigned int)p[1] << 8);
++			if ((fc & 0x000c) != 0x0008)
++				return APBR_WIRE_INVALID;
++			hdr = 24 + (((fc & 0x0300) == 0x0300) ? 6 : 0);
++			if (fc & 0x0080) {
++				if (len < hdr + 2)
++					return APBR_WIRE_INVALID;
++				/* An A-MSDU is not one authentication frame. */
++				if (p[hdr] & 0x80)
++					return APBR_WIRE_DATA;
++				hdr += 2;
++				if (fc & 0x8000)
++					hdr += 4;
++			}
++			if (len < hdr)
++				return APBR_WIRE_INVALID;
++			off = hdr;
++		} else if (format != APBR_LLC) {
++			return APBR_WIRE_INVALID;
++		}
++		if (len - off < 8)
++			return APBR_WIRE_INVALID;
++		if (!apbr_snap(p + off, len - off))
++			return APBR_WIRE_DATA;
++		off += 6;
++	}
++	result.type_offset = off;
++	type = apbr_be16(p + off);
++	while (apbr_is_vlan(type)) {
++		if (result.tags == 8 || off > limit || limit - off < 6)
++			return APBR_WIRE_INVALID;
++		result.tags++;
++		off += 4;
++		type = apbr_be16(p + off);
++	}
++	if (type != 0x888e) {
++		*v = result;
++		return APBR_WIRE_DATA;
++	}
++	/* EtherType followed by the four-byte EAPOL header. */
++	if (off > limit || limit - off < 6)
++		return APBR_WIRE_INVALID;
++	off += 2;
++	body = apbr_be16(p + off + 2);
++	if (p[off] < 1 || p[off] > 3 || p[off + 1] > 4 ||
++	    body > limit - off - 4)
++		return APBR_WIRE_INVALID;
++	switch (p[off + 1]) {
++	case 0: /* EAP: its own length is part of the authentication boundary. */
++		if (body < 4)
++			return APBR_WIRE_INVALID;
++		eap_len = apbr_be16(p + off + 6);
++		if (eap_len != body || p[off + 4] < 1 || p[off + 4] > 4 ||
++		    ((p[off + 4] == 1 || p[off + 4] == 2) && body < 5) ||
++		    ((p[off + 4] == 3 || p[off + 4] == 4) && body != 4))
++			return APBR_WIRE_INVALID;
++		break;
++	case 1: /* Start */
++	case 2: /* Logoff */
++		if (body)
++			return APBR_WIRE_INVALID;
++		break;
++	case 3: /* Key descriptor validation remains the WPA state machine's job. */
++	case 4:
++		if (!body)
++			return APBR_WIRE_INVALID;
++		break;
++	}
++	result.eap_offset = off;
++	result.eap_length = body + 4;
++	*v = result;
++	return APBR_WIRE_EAPOL;
++}
++
++/* The final queue boundary uses current objects and the still-intact DA.
++ * Pointer values identify the selected wdev; none are retained by this helper.
++ */
++static inline int apbr_tx_binding_matches(const unsigned char *da,
++		const unsigned char *peer_addr, const void *selected_wdev,
++		const void *peer_wdev, const void *tr_wdev,
++		unsigned int wcid, unsigned int bmc_wcid,
++		int sta_rec_valid, int associated, int ordinary_client,
++		int port_secured, int bmc_secured, int authentication,
++		int radius_allowed)
++{
++	unsigned int i;
++	if (!da || !peer_addr || !selected_wdev ||
++	    selected_wdev != peer_wdev || selected_wdev != tr_wdev ||
++	    !sta_rec_valid)
++		return 0;
++	if (da[0] & 1)
++		return wcid == bmc_wcid && bmc_secured;
++	if (!associated || !ordinary_client || !radius_allowed)
++		return 0;
++	for (i = 0; i < 6; i++)
++		if (da[i] != peer_addr[i])
++			return 0;
++	return port_secured || authentication;
++}
++
++static inline int apbr_isolation_denies(int in, int out, int same_bss,
++				       int no_forwarding, int no_between_bss)
++{
++	if (in < 0 || out < 0)
++		return 1;
++	if (!in || !out)
++		return 0;
++	return same_bss ? !!no_forwarding : !!no_between_bss;
++}
++
++#endif
+--- a/mt_wifi/embedded/include/hw_ctrl.h
++++ b/mt_wifi/embedded/include/hw_ctrl.h
+@@ -31,6 +31,11 @@
+ #include "rtmp_os.h"
+ #include "security/wpa_cmm.h"
+ #include "protocol/protection.h"
++#ifdef CONFIG_MTK_AP_BRIDGE
++#include <linux/mtk_cpu_profile.h>
++#include <linux/mtk_warp_ser.h>
++#include <linux/workqueue.h>
++#endif
+ 
+ struct _RTMP_ADAPTER;
+ struct _MAC_TABLE_ENTRY;
+@@ -792,6 +797,28 @@
+ 	atomic_t notify_fe;
+ 	struct mtk_notifier_block mtk_nb;
+ #endif
++#ifdef CONFIG_MTK_AP_BRIDGE
++	spinlock_t cpu_ser_lock;
++	struct mtk_warp_ser_request warp_request;
++	u64 fe_ser_cookie;
++	int fe_result;
++	int cpu_ser_error;
++	u32 cpu_saved_flags;
++	struct module *cpu_proxy_module;
++	bool cpu_proxy_release;
++	bool cpu_ser_active;
++	bool cpu_cleanup;
++	bool cpu_hif_live;
++	bool cpu_hif_quiet;
++	bool cpu_qm_live;
++	bool cpu_tm_live;
++	bool cpu_notifier_registered;
++	bool cpu_participant_registered;
++	bool cpu_participant_live;
++	struct delayed_work cpu_ser_watchdog;
++	u64 cpu_watchdog_cookie;
++	bool cpu_watchdog_drained;
++#endif
+ } ERR_RECOVERY_CTRL_T, *P_ERR_RECOVERY_CTRL_T;
+ 
+ VOID RTMP_MAC_RECOVERY(struct _RTMP_ADAPTER *pAd, UINT32 Status);
+@@ -803,6 +830,12 @@
+ BOOLEAN IsErrRecoveryInIdleStat(struct _RTMP_ADAPTER *pAd);
+ VOID ser_sys_reset(RTMP_STRING *arg);
+ NTSTATUS HwRecoveryFromError(struct _RTMP_ADAPTER *pAd);
++#ifdef CONFIG_MTK_AP_BRIDGE
++int mtk_wifi_cpu_ser_phase(struct _RTMP_ADAPTER *pAd, u32 phase);
++void mtk_wifi_cpu_ser_watchdog_start(struct _RTMP_ADAPTER *pAd, u64 cookie);
++void mtk_wifi_cpu_ser_watchdog_cancel(struct _RTMP_ADAPTER *pAd);
++int mtk_wifi_cpu_queues_stop(struct _RTMP_ADAPTER *pAd);
++#endif
+ void SerTimeLogDump(struct _RTMP_ADAPTER *pAd);
+ #endif /* ERR_RECOVERY */
+ 
+--- a/mt_wifi/embedded/include/rtmp.h
++++ b/mt_wifi/embedded/include/rtmp.h
+@@ -26,6 +26,9 @@
+ */
+ #ifndef __RTMP_H__
+ #define __RTMP_H__
++#ifdef CONFIG_MTK_AP_BRIDGE
++#include <linux/mtk_ap_bridge.h>
++#endif
+ #include "common/link_list.h"
+ #include "common/module.h"
+ #include "spectrum_def.h"
+@@ -2430,6 +2433,9 @@
+ 
+ struct wifi_dev {
+ 	PNET_DEV if_dev;
++#ifdef CONFIG_MTK_AP_BRIDGE
++	struct mtk_ap_bridge_gate *ap_bridge_gate;
++#endif
+ 	VOID *func_dev;
+ 	VOID *sys_handle;
+ 	CHAR wdev_idx;	/* index refer from pAd->wdev_list[] */
+@@ -7698,6 +7704,9 @@
+ 	The miniport adapter structure
+ */
+ struct _RTMP_ADAPTER {
++#ifdef CONFIG_MTK_AP_BRIDGE
++	struct mtk_ap_adapter *ap_bridge;
++#endif
+ 	UINT8 PeerApccfs1;
+ 	VOID *OS_Cookie;	/* save specific structure relative to OS */
+ 	PNET_DEV net_dev;
+@@ -9432,6 +9441,11 @@
+ 	UCHAR *AMSDU_ADDR;
+ #ifdef VLAN_SUPPORT
+ 	UCHAR is_htf;
++#endif
++
++#ifdef CONFIG_MTK_AP_BRIDGE
++	/* Keep the descriptor-compatible prefix at offset zero. */
++	struct mtk_ap_bridge_reader ap_bridge_reader;
+ #endif
+ 
+ } RX_BLK ____cacheline_aligned;
+@@ -15666,5 +15680,6 @@
+ #ifdef CONFIG_RA_CEILING_SUPPORT
+ INT ShowRateCeilingTable(RTMP_ADAPTER *pAd, RTMP_STRING *arg);
+ #endif
++#include "ap_bridge.h"
+ #endif  /* __RTMP_H__ */
+ 
+--- a/mt_wifi/embedded/plug_in/warp_proxy/warp_proxy.c
++++ b/mt_wifi/embedded/plug_in/warp_proxy/warp_proxy.c
+@@ -3,6 +3,43 @@
+ #include "warp_proxy.h"
+ #include <rtmp_def.h>
+ #include <warp.h>
++#ifdef CONFIG_MTK_AP_BRIDGE
++#include <linux/mtk_cpu_profile.h>
++#include <linux/mtk_warp_ser.h>
++/* AX6000 is one physical MT7986 DBDC owner. Its D-held module reference
++ * outlives every callback and is released by D only after SYS_DOWN returns. */
++static void *cpu_proxy_owner;
++static u32 cpu_proxy_resources; /* 0 witnessed never-created, 1 attached, 2 unknown */
++static u64 cpu_proxy_cookie;
++static u32 cpu_proxy_phase;
++static bool cpu_proxy_fw_registered;
++
++static int cpu_proxy_empty_phase(struct mtk_warp_ser_request *r)
++{
++	if (!r->cookie || READ_ONCE(r->cancelled) || READ_ONCE(r->permission) == 2 ||
++	    time_after_eq(jiffies, r->deadline))
++		return -ECANCELED;
++	if (r->phase == MTK_WARP_SER_QUIESCE) {
++		if (cpu_proxy_phase) return -EBUSY;
++		cpu_proxy_cookie = r->cookie;
++	} else if (r->cookie != cpu_proxy_cookie || r->phase != cpu_proxy_phase + 1)
++		return -EPROTO;
++	if (cmpxchg(&r->permission, 0, 1) != 0) return -ECANCELED;
++	if (r->phase == MTK_WARP_SER_STOP) r->stop_proven = 1;
++	if (r->phase == MTK_WARP_SER_CLEANUP) {
++		if (!r->stop_proven || r->cleanup_done) {
++			cmpxchg(&r->permission, 1, 0);
++			return -EPROTO;
++		}
++		r->cleanup_done = 1;
++	}
++	if (r->phase == MTK_WARP_SER_COMPLETE) {
++		cpu_proxy_phase = 0; cpu_proxy_cookie = 0;
++	} else cpu_proxy_phase = r->phase;
++	cmpxchg(&r->permission, 1, 0);
++	return READ_ONCE(r->cancelled) ? -ECANCELED : 0;
++}
++#endif
+ 
+ #define DRIVER_DESC "Proxy agent between wifi client card & warp "
+ #define proxy_print(fmt, args...) pr_info(fmt, ## args)
+@@ -309,7 +346,14 @@
+ 				dma_addr_t alloc_pa)
+ {
+ 	struct _RTMP_ADAPTER *ad = (struct _RTMP_ADAPTER *)priv_data;
+-	PKT_TOKEN_CB *cb = hc_get_ct_cb(ad->hdev_ctrl);
++	PKT_TOKEN_CB *cb;
++#ifdef CONFIG_MTK_AP_BRIDGE
++	if (!ad || !ad->hdev_ctrl) return 0xffffffffU;
++#endif
++	cb = hc_get_ct_cb(ad->hdev_ctrl);
++#ifdef CONFIG_MTK_AP_BRIDGE
++	if (!cb) return 0xffffffffU;
++#endif
+ 
+ 	return token_rx_dmad_init(&cb->rx_que, pkt, alloc_size, alloc_va, alloc_pa);
+ }
+@@ -322,12 +366,21 @@
+ 				void **alloc_va, dma_addr_t *alloc_pa)
+ {
+ 	struct _RTMP_ADAPTER *ad = (struct _RTMP_ADAPTER *)priv_data;
+-	PKT_TOKEN_CB *cb = hc_get_ct_cb(ad->hdev_ctrl);
++	PKT_TOKEN_CB *cb;
++#ifdef CONFIG_MTK_AP_BRIDGE
++	if (!ad || !ad->hdev_ctrl || !pkt || !alloc_va || !alloc_pa) return -EINVAL;
++#endif
++	cb = hc_get_ct_cb(ad->hdev_ctrl);
++#ifdef CONFIG_MTK_AP_BRIDGE
++	if (!cb || !cb->rx_que.pkt_token || tkn_rx_id >= cb->rx_que.pkt_tkid_cnt) return -ENOENT;
++	return token_rx_dmad_lookup(&cb->rx_que, tkn_rx_id, pkt, alloc_va, alloc_pa);
++#else
+ 
+ 	token_rx_dmad_lookup(&cb->rx_que, tkn_rx_id, pkt,
+ 			     alloc_va, alloc_pa);
+ 
+ 	return 0;
++#endif
+ }
+ 
+ /*
+@@ -694,12 +747,25 @@
+ 	}
+ 
+ 	client_cap_get(hw, ad);
++#ifdef CONFIG_MTK_AP_BRIDGE
++	if (client_register(hw) != 0) {
++#else
+ 	if (client_register(hw) < 0) {
++#endif
+ 		/*probe client fail, disable wrap in client card*/
+ 		client_whnat_en_set(ad, false);
+ 		goto err;
+ 	}
++#ifdef CONFIG_MTK_AP_BRIDGE
++	cpu_proxy_resources = 1;
++	if (register_fw_cmd_notifier(ad, &fw_cmd_ne)) {
++		cpu_proxy_resources = 2;
++		goto err;
++	}
++	cpu_proxy_fw_registered = true;
++#else
+ 	register_fw_cmd_notifier(ad, &fw_cmd_ne);
++#endif
+ err:
+ 	return;
+ }
+@@ -710,7 +776,14 @@
+ static void
+ client_driver_remove(void *ad)
+ {
++#ifdef CONFIG_MTK_AP_BRIDGE
++	if (cpu_proxy_fw_registered) {
++		unregister_fw_cmd_notifier(ad, &fw_cmd_ne);
++		cpu_proxy_fw_registered = false;
++	}
++#else
+ 	unregister_fw_cmd_notifier(ad, &fw_cmd_ne);
++#endif
+ 	warp_client_remove(ad);
+ }
+ 
+@@ -764,6 +837,57 @@
+ static u32
+ client_handle(u16 hook, void *ad, void *priv)
+ {
++#ifdef CONFIG_MTK_AP_BRIDGE
++	ERR_RECOVERY_CTRL_T *c = &((RTMP_ADAPTER *)ad)->ErrRecoveryCtl;
++	if (hook == WLAN_HOOK_SYS_UP) {
++		if (cpu_proxy_owner || c->cpu_proxy_module) return 0;
++		if (!try_module_get(THIS_MODULE)) return 0;
++		cpu_proxy_owner = ad;
++		cpu_proxy_resources = 0; /* The only explicit never-created witness. */
++		cpu_proxy_phase = 0;
++		cpu_proxy_cookie = 0;
++		cpu_proxy_fw_registered = false;
++		c->cpu_proxy_module = THIS_MODULE;
++		c->cpu_proxy_release = false;
++		if (client_whnat_en_get(ad)) {
++			cpu_proxy_resources = 2; /* Allocation/registration may partially fail. */
++			client_driver_probe(ad);
++		}
++		return 0;
++	}
++	/* All lifecycle hooks inspect resource history before whnat_en. */
++	if (hook == WLAN_HOOK_SER || hook == WLAN_HOOK_HIF_INIT) {
++		struct mtk_warp_ser_request *r = &c->warp_request;
++		int ret = -ENODEV;
++		if (cpu_proxy_owner == ad && c->cpu_proxy_module == THIS_MODULE) {
++			if (cpu_proxy_resources == 1)
++				ret = hook == WLAN_HOOK_HIF_INIT ? warp_ring_init(ad) : warp_ser_checked(ad, r);
++			else if (!cpu_proxy_resources)
++				ret = hook == WLAN_HOOK_HIF_INIT ? 0 : cpu_proxy_empty_phase(r);
++		}
++		WRITE_ONCE(r->result, ret > 0 ? -EIO : ret);
++		return 0;
++	}
++	if (hook == WLAN_HOOK_HIF_EXIT) {
++		if (cpu_proxy_owner != ad)
++			mtk_cpu_dma_fatal(MTK_CPU_DMA_PROOF_LOST, -ENODEV);
++		if (cpu_proxy_resources) warp_ring_exit(ad);
++		return 0;
++	}
++	if (hook == WLAN_HOOK_SYS_DOWN) {
++		if (cpu_proxy_owner != ad) return 0;
++		/* D has synchronously killed HIF IRQ/tasks and token producers first. */
++		if (c->cpu_hif_live || !c->cpu_hif_quiet || c->cpu_ser_active)
++			mtk_cpu_dma_fatal(MTK_CPU_DMA_PROOF_LOST, -EBUSY);
++		if (cpu_proxy_resources) client_driver_remove(ad);
++		cpu_proxy_owner = NULL;
++		cpu_proxy_resources = 0;
++		cpu_proxy_cookie = 0;
++		cpu_proxy_phase = 0;
++		c->cpu_proxy_release = true;
++		return 0;
++	}
++#endif
+ 
+ 	if (!client_whnat_en_get(ad))
+ 		return 0;
+@@ -859,7 +983,17 @@
+ 
+ static void __exit warp_proxy_exit(void)
+ {
++#ifdef CONFIG_MTK_AP_BRIDGE
++	struct mtk_cpu_lifetime lifetime;
++	mtk_cpu_destruct_enter(&lifetime);
++	/* Any attached owner holds a module reference, so normal exit is empty. */
++	if (cpu_proxy_owner)
++		mtk_cpu_dma_fatal(MTK_CPU_DMA_CONTROL_RACE, -EBUSY);
++#endif
+ 	mt_wlan_hook_unregister(&warp_ops);
++#ifdef CONFIG_MTK_AP_BRIDGE
++	mtk_cpu_destruct_exit(&lifetime);
++#endif
+ }
+ 
+ module_init(warp_proxy_init);
+--- a/mt_wifi/embedded/plug_in/whnat/woe_client_jedi.c
++++ b/mt_wifi/embedded/plug_in/whnat/woe_client_jedi.c
+@@ -143,6 +143,7 @@
+ */
+ void wifi_tx_tuple_add(void *entry, unsigned char *tx_info)
+ {
++#ifndef CONFIG_MTK_AP_BRIDGE
+ 	struct whnat_entry *whnat = (struct whnat_entry *)entry;
+ 	struct wlan_tx_info t, *info =  &t;
+ 	struct _TX_BLK *txblk = (struct _TX_BLK *)tx_info;
+@@ -188,6 +189,7 @@
+ 		wifi_dump_skb(whnat, info, skb);
+ #endif /*WHNAT_DBG_EN*/
+ 	}
++#endif
+ }
+ 
+ /*
+--- a/mt_wifi/embedded/security/cmm_wpa.c
++++ b/mt_wifi/embedded/security/cmm_wpa.c
+@@ -1481,7 +1481,12 @@
+ 	IN UCHAR wdev_idx,
+ 	IN BOOLEAN eth_frame)
+ {
+-	ULONG Body_len, min_len = (LENGTH_802_1_H + LENGTH_EAPOL_H);
++	ULONG Body_len;
++#ifndef CONFIG_MTK_AP_BRIDGE
++	ULONG min_len = (LENGTH_802_1_H + LENGTH_EAPOL_H);
++#else
++	struct apbr_wire_view view;
++#endif
+ 	BOOLEAN Cancelled;
+ 	struct wifi_dev *wdev;
+ 	ASSERT(wdev_idx <= WDEV_NUM_MAX);
+@@ -1491,6 +1496,17 @@
+ 
+ 	wdev = pAd->wdev_list[wdev_idx];
+ 
++#ifdef CONFIG_MTK_AP_BRIDGE
++	if (!pEntry || !wdev || !pData ||
++	    apbr_parse_wire(pData, DataByteCount,
++		eth_frame ? APBR_ETHERNET : APBR_LLC, &view) != APBR_WIRE_EAPOL)
++		return FALSE;
++	pData += view.eap_offset;
++#ifdef SW_CONNECT_SUPPORT
++	if (VALID_UCAST_ENTRY_WCID(pAd, pEntry->wcid))
++		pAd->tr_ctl.tr_entry[pEntry->wcid].rx_eap_cnt++;
++#endif
++#else
+ 	do {
+ 		if (eth_frame) {
+ 			min_len = (LENGTH_802_3 + LENGTH_EAPOL_H);
+@@ -1524,6 +1540,7 @@
+ 		pData += 2;
+ 	} else
+ 		return FALSE;
++#endif
+ 
+ 	switch (*(pData + 1)) {
+ 	case EAPPacket:
+--- a/mt_wifi/embedded/sta/sta.c
++++ b/mt_wifi/embedded/sta/sta.c
+@@ -599,7 +599,7 @@
+ 			wf_drv_tbl.wf_fwd_probe_adapter(pAd);
+ #endif
+ 
+-#if defined(CONFIG_FAST_NAT_SUPPORT) && (defined(CONFIG_WIFI_PKT_FWD) || defined(CONFIG_WIFI_PKT_FWD_MODULE))
++#if defined(CONFIG_FAST_NAT_SUPPORT) && !defined(CONFIG_MTK_AP_BRIDGE) && (defined(CONFIG_WIFI_PKT_FWD) || defined(CONFIG_WIFI_PKT_FWD_MODULE))
+ 		if (wf_ra_sw_nat_hook_rx_bkup != NULL)
+ 			MTWF_DBG(pAd, DBG_CAT_AP, DBG_SUBCAT_ALL, DBG_LVL_INFO,
+ 					" wf_ra_sw_nat_hook_rx_bkup:%p\n",
+@@ -676,7 +676,7 @@
+ 	pStaCfg->ApCliAutoConnectRunning = FALSE;
+ #endif /* APCLI_AUTO_CONNECT_SUPPORT */
+ 
+-#if defined(CONFIG_FAST_NAT_SUPPORT) && (defined(CONFIG_WIFI_PKT_FWD) || defined(CONFIG_WIFI_PKT_FWD_MODULE))
++#if defined(CONFIG_FAST_NAT_SUPPORT) && !defined(CONFIG_MTK_AP_BRIDGE) && (defined(CONFIG_WIFI_PKT_FWD) || defined(CONFIG_WIFI_PKT_FWD_MODULE))
+ 	if (wf_ra_sw_nat_hook_rx_bkup != NULL)
+ 		MTWF_DBG(pAd, DBG_CAT_AP, DBG_SUBCAT_ALL, DBG_LVL_INFO,
+ 		 "wf_ra_sw_nat_hook_rx_bkup:%p\n"t, wf_ra_sw_nat_hook_rx_bkup);
+--- a/mt_wifi/hw_ctrl/hw_init.c
++++ b/mt_wifi/hw_ctrl/hw_init.c
+@@ -186,20 +186,56 @@
+ {
+ 	INT32 ret = NDIS_STATUS_SUCCESS;
+ 	HIF_INFO_T hifInfo;
+-
++#ifdef CONFIG_MTK_AP_BRIDGE
++	ERR_RECOVERY_CTRL_T *c = &pAd->ErrRecoveryCtl;
++	struct mtk_warp_ser_request *r = &c->warp_request;
++	struct mtk_cpu_lifetime lifetime;
++	mtk_cpu_destruct_enter(&lifetime);
++	if (READ_ONCE(c->cpu_ser_error)) { ret = -EIO; goto out; }
++	if (!c->cpu_participant_live) { ret = -EACCES; goto out; }
++	if (!c->cpu_ser_active && !c->cpu_hif_live) {
++		c->cpu_hif_live = true;
++	}
++#endif
+ 	os_zero_mem(&hifInfo, sizeof(HIF_INFO_T));
+ 	ret = WfHifSysInit(pAd, &hifInfo);
+-
+-	if (ret != NDIS_STATUS_SUCCESS)
+-		goto err;
+-
+-	WfHifHwInit(pAd, &hifInfo);
++	if (ret != NDIS_STATUS_SUCCESS) goto err;
++#ifdef CONFIG_MTK_AP_BRIDGE
++	/* D address publication has its own proof, never borrowed from WED. */
++	if (READ_ONCE(r->cancelled)) { ret = -ECANCELED; goto err; }
++	r->stop_proven = 0;
++	c->cpu_hif_quiet = false;
++#endif
++	ret = WfHifHwInit(pAd, &hifInfo);
++	if (ret != NDIS_STATUS_SUCCESS) goto err;
++#ifdef CONFIG_MTK_AP_BRIDGE
++	if (c->cpu_ser_active) {
++		ret = mtk_wifi_cpu_ser_phase(pAd, MTK_WARP_SER_PREPARE);
++	} else {
++		memset(r, 0, sizeof(*r));
++		r->phase = MTK_WARP_SER_PREPARE;
++		r->result = -EINPROGRESS;
++		r->deadline = jiffies + msecs_to_jiffies(5000);
++		WLAN_HOOK_CALL(WLAN_HOOK_HIF_INIT, pAd, c);
++		ret = r->result > 0 ? -EIO : r->result;
++	}
++	if (ret) goto err;
++	mtk_cpu_destruct_exit(&lifetime);
++#else
+ 	WLAN_HOOK_CALL(WLAN_HOOK_HIF_INIT, pAd, NULL);
+-	MTWF_DBG(pAd, DBG_CAT_INIT, DBG_SUBCAT_ALL, DBG_LVL_INFO, "<--(), Success!\n");
++#endif
+ 	return 0;
+ err:
++#ifdef CONFIG_MTK_AP_BRIDGE
++	mtk_cpu_profile_note_fault(ret);
++	if (!c->cpu_hif_quiet)
++		mtk_cpu_dma_fatal(MTK_CPU_DMA_INIT_EXPOSED, ret);
++#endif
+ 	WfHifSysExit(pAd);
+-	MTWF_DBG(pAd, DBG_CAT_INIT, DBG_SUBCAT_ALL, DBG_LVL_INFO, "<--(), Err! status=%d\n", ret);
++#ifdef CONFIG_MTK_AP_BRIDGE
++out:
++	mtk_cpu_destruct_exit(&lifetime);
++#endif
+ 	return ret;
+ }
+ 
+@@ -424,7 +460,7 @@
+ }
+ 
+ 
+-INT32 WfSysPosExit(RTMP_ADAPTER *pAd)
++static INT32 WfSysPosExit_impl(RTMP_ADAPTER *pAd)
+ {
+ 	INT32 ret = NDIS_STATUS_SUCCESS;
+ 
+@@ -434,6 +470,19 @@
+ 	return ret;
+ }
+ 
++INT32 WfSysPosExit(RTMP_ADAPTER *pAd)
++{
++#ifdef CONFIG_MTK_AP_BRIDGE
++	struct mtk_cpu_lifetime lifetime;
++	mtk_cpu_destruct_enter(&lifetime);
++#endif
++	INT32 result = WfSysPosExit_impl(pAd);
++#ifdef CONFIG_MTK_AP_BRIDGE
++	mtk_cpu_destruct_exit(&lifetime);
++#endif
++	return result;
++}
++
+ INT32 WfSysCfgInit(RTMP_ADAPTER *pAd)
+ {
+ 	INT32 ret = NDIS_STATUS_SUCCESS;
+--- a/mt_wifi/include/os/rt_linux.h
++++ b/mt_wifi/include/os/rt_linux.h
+@@ -274,7 +274,7 @@
+ #define RTMP_DEC_REF(_A)		0
+ #define RTMP_GET_REF(_A)		0
+ 
+-#if defined(CONFIG_FAST_NAT_SUPPORT)
++#if defined(CONFIG_FAST_NAT_SUPPORT) && !defined(CONFIG_MTK_AP_BRIDGE)
+ #define RT_MOD_HNAT_DEREG(_net_dev) \
+ 	do {\
+ 		if (ppe_dev_unregister_hook != NULL) \
+@@ -1102,7 +1102,7 @@
+  *	Other function prototypes definitions
+  ***********************************************************************************/
+ 
+-#ifdef CONFIG_FAST_NAT_SUPPORT
++#if defined(CONFIG_FAST_NAT_SUPPORT) && !defined(CONFIG_MTK_AP_BRIDGE)
+ extern int (*ra_sw_nat_hook_tx)(struct sk_buff *skb, int gmac_no);
+ extern int (*ra_sw_nat_hook_rx)(struct sk_buff *skb);
+ extern int (*ppe_del_entry_by_mac)(unsigned char *mac);
+--- a/mt_wifi/os/linux/rbus_prop_dev.c
++++ b/mt_wifi/os/linux/rbus_prop_dev.c
+@@ -141,6 +141,10 @@
+ 	((POS_COOKIE)handle)->pci_dev = (VOID *)pdev;
+ 	((POS_COOKIE)handle)->pDev = &pdev->dev;
+ 	RtmpRaDevCtrlInit(pAd, RTMP_DEV_INF_RBUS);
++#if defined(CONFIG_MTK_AP_BRIDGE) && defined(MTK_FE_RESET_RECOVER)
++	rv = mtk_fe_reset_notifier_init(pAd);
++	if (rv) goto err_out_free_radev;
++#endif
+ 	net_dev = RtmpPhyNetDevInit(pAd, &netDevHook);
+ 
+ 	if (net_dev == NULL)
+@@ -191,7 +195,7 @@
+ 		ra_classifier_init_func();
+ 
+ #endif
+-#ifdef MTK_FE_RESET_RECOVER
++#if defined(MTK_FE_RESET_RECOVER) && !defined(CONFIG_MTK_AP_BRIDGE)
+ 	mtk_fe_reset_notifier_init(pAd);
+ #endif
+ #ifdef WF_RESET_SUPPORT
+@@ -202,6 +206,10 @@
+ 
+ 	return 0;
+ err_out_free_netdev:
++#ifdef CONFIG_MTK_AP_BRIDGE
++	/* Main gate may exist even though register_netdev never succeeded. */
++	mtk_ap_adapter_exit(pAd);
++#endif
+ 	RtmpOSNetDevFree(net_dev);
+ err_out_free_radev:
+ 	/* free RTMP_ADAPTER strcuture and os_cookie*/
+@@ -210,7 +218,7 @@
+ 	return -ENODEV;
+ }
+ 
+-static VOID DEVEXIT mt_rbus_remove(struct pci_dev *pci_dev)
++static VOID DEVEXIT mt_rbus_remove_impl(struct pci_dev *pci_dev)
+ {
+ 	struct pci_hif_chip *hif_chip = pci_get_drvdata(pci_dev);
+ 	struct net_device *net_dev = hif_chip->hif->net_dev;
+@@ -234,7 +242,7 @@
+ #ifdef WF_RESET_SUPPORT
+ 		wf_reset_exit(pAd);
+ #endif
+-#ifdef MTK_FE_RESET_RECOVER
++#if defined(MTK_FE_RESET_RECOVER) && !defined(CONFIG_MTK_AP_BRIDGE)
+ 		mtk_fe_reset_notifier_exit(pAd);
+ #endif
+ 		RtmpPhyNetDevExit(pAd, net_dev);
+@@ -260,6 +268,18 @@
+ 	if (ra_classifier_release_func != NULL)
+ 		ra_classifier_release_func();
+ 
++#endif
++}
++
++static VOID DEVEXIT mt_rbus_remove(struct pci_dev *pci_dev)
++{
++#ifdef CONFIG_MTK_AP_BRIDGE
++	struct mtk_cpu_lifetime lifetime;
++	mtk_cpu_destruct_enter(&lifetime);
++#endif
++	mt_rbus_remove_impl(pci_dev);
++#ifdef CONFIG_MTK_AP_BRIDGE
++	mtk_cpu_destruct_exit(&lifetime);
+ #endif
+ }
+ 
+@@ -291,11 +311,23 @@
+ }
+ 
+ 
+-void __exit wbsys_module_exit(void)
++static void __exit wbsys_module_exit_impl(void)
+ {
+ 	pci_unregister_driver(&mt_rbus_driver);
+  #ifndef MULTI_INF_SUPPORT
+ 	os_module_exit();
++#endif
++}
++
++void __exit wbsys_module_exit(void)
++{
++#ifdef CONFIG_MTK_AP_BRIDGE
++	struct mtk_cpu_lifetime lifetime;
++	mtk_cpu_destruct_enter(&lifetime);
++#endif
++	wbsys_module_exit_impl();
++#ifdef CONFIG_MTK_AP_BRIDGE
++	mtk_cpu_destruct_exit(&lifetime);
+ #endif
+ }
+ 
+--- a/mt_wifi/os/linux/rt_linux.c
++++ b/mt_wifi/os/linux/rt_linux.c
+@@ -39,6 +39,12 @@
+ #include <linux/notifier.h>
+ #include <linux/oom.h>
+ #include <linux/netdevice.h>
++#ifdef CONFIG_MTK_AP_BRIDGE
++#include <linux/mtk_cpu_profile.h>
++extern int mtk_ap_private_ioctl(struct net_device *, struct ifreq *,
++			       void __user *, int);
++extern void mtk_ap_netdev_block(PNET_DEV);
++#endif
+ #include <linux/mm.h>
+ #include <linux/preempt.h>
+ #include <net/sch_generic.h>
+@@ -1800,6 +1806,9 @@
+ 
+ void RtmpOSNetDevFree(PNET_DEV pNetDev)
+ {
++#ifdef CONFIG_MTK_AP_BRIDGE
++	struct mtk_cpu_lifetime ap_lifetime;
++#endif
+ #if (KERNEL_VERSION(2, 6, 31) <= LINUX_VERSION_CODE)
+ 	void *tmp_ptr;
+ #endif
+@@ -1811,6 +1820,9 @@
+ 	}
+ 
+ #if (KERNEL_VERSION(2, 5, 0) <= LINUX_VERSION_CODE)
++#ifdef CONFIG_MTK_AP_BRIDGE
++	mtk_cpu_destruct_enter(&ap_lifetime);
++#endif
+ #if (KERNEL_VERSION(2, 6, 31) <= LINUX_VERSION_CODE)
+ 	tmp_ptr = (void *)pNetDev->netdev_ops;
+ #endif
+@@ -1820,6 +1832,9 @@
+ 		vfree(tmp_ptr);
+ 		tmp_ptr = NULL;
+ 	}
++#endif
++#ifdef CONFIG_MTK_AP_BRIDGE
++	mtk_cpu_destruct_exit(&ap_lifetime);
+ #endif
+ #else
+ 	kfree(pNetDev);
+@@ -1853,7 +1868,9 @@
+ #endif /* LINUX_VERSION_CODE */
+ 
+ 	if (*new_dev_p)
++	{
+ 		return NDIS_STATUS_SUCCESS;
++	}
+ 	else
+ 		return NDIS_STATUS_FAILURE;
+ }
+@@ -1931,7 +1948,15 @@
+ 
+ void RtmpOSNetDevDetach(PNET_DEV pNetDev)
+ {
++#ifdef CONFIG_MTK_AP_BRIDGE
++	struct mtk_cpu_lifetime lifetime;
++	mtk_cpu_destruct_enter(&lifetime);
++	mtk_ap_netdev_block(pNetDev);
++#endif
+ 	unregister_netdevice(pNetDev);
++#ifdef CONFIG_MTK_AP_BRIDGE
++	mtk_cpu_destruct_exit(&lifetime);
++#endif
+ }
+ 
+ 
+@@ -1988,6 +2013,9 @@
+ 		pNetDevOps->ndo_start_xmit =
+ 			(HARD_START_XMIT_FUNC) (pDevOpHook->xmit);
+ 		pNetDevOps->ndo_do_ioctl = pDevOpHook->ioctl;
++#ifdef CONFIG_MTK_AP_BRIDGE
++		pNetDevOps->ndo_siocdevprivate = mtk_ap_private_ioctl;
++#endif
+ #else
+ 		pNetDev->open = pDevOpHook->open;
+ 		pNetDev->stop = pDevOpHook->stop;
+--- a/mt_wifi/os/linux/rt_main_dev.c
++++ b/mt_wifi/os/linux/rt_main_dev.c
+@@ -223,7 +223,7 @@
+  *		(3) BA Reordering:				ba_reordering_resource_release()
+  * ========================================================================
+  */
+-int mt_wifi_close(VOID *dev)
++static int mt_wifi_close_impl(VOID *dev)
+ {
+ 	struct net_device *net_dev = (struct net_device *)dev;
+ 	VOID	*pAd = NULL;
+@@ -261,6 +261,34 @@
+ 	return 0;
+ }
+ 
++int mt_wifi_close(VOID *dev)
++{
++	int result;
++#ifdef CONFIG_MTK_AP_BRIDGE
++	struct mtk_cpu_lifetime lifetime;
++	struct module *release = NULL;
++	RTMP_ADAPTER *ad = RTMP_OS_NETDEV_GET_PRIV((struct net_device *)dev);
++	mtk_cpu_destruct_enter(&lifetime);
++#endif
++	result = mt_wifi_close_impl(dev);
++#ifdef CONFIG_MTK_AP_BRIDGE
++	if (ad && ad->ErrRecoveryCtl.cpu_proxy_release) {
++		release = ad->ErrRecoveryCtl.cpu_proxy_module;
++		ad->ErrRecoveryCtl.cpu_proxy_module = NULL;
++		ad->ErrRecoveryCtl.cpu_proxy_release = false;
++	}
++	if (ad && ad->ErrRecoveryCtl.cpu_participant_live) {
++		if (ad->ErrRecoveryCtl.cpu_hif_live || ad->ErrRecoveryCtl.cpu_proxy_module ||
++		    mtk_cpu_wifi_participant_set_live(ad, false))
++			mtk_cpu_dma_fatal(MTK_CPU_DMA_PROOF_LOST, -EBUSY);
++		ad->ErrRecoveryCtl.cpu_participant_live = false;
++	}
++	mtk_cpu_destruct_exit(&lifetime);
++	if (release) module_put(release);
++#endif
++	return result;
++}
++
+ #ifdef BB_SOC
+ #ifdef TCSUPPORT_WLAN_SW_RPS
+ extern int (*ecnt_wifi_rx_rps_hook)(struct sk_buff *skb);
+@@ -282,7 +310,7 @@
+  *	otherwise			Open Fail
+  * ========================================================================
+  */
+-int mt_wifi_open(VOID *dev)
++static int mt_wifi_open_impl(VOID *dev)
+ {
+ 	struct net_device *net_dev = (struct net_device *)dev;
+ 	VOID *pAd = NULL;
+@@ -339,6 +367,11 @@
+ #if defined(WHNAT_SUPPORT) || defined(MT7986) || defined(MT7916) || defined(MT7981)
+ 	RTMPPreReadProfile(pAd);
+ #endif /* defined(WHNAT_SUPPORT) || defined(MT7986) || defined(MT7916) || defined(MT7981) */
++#ifdef CONFIG_MTK_AP_BRIDGE
++	/* SYS_UP itself can expose WO/CCIF DMA before the first D HIF init. */
++	if (mtk_cpu_wifi_participant_set_live(pAd, true)) return -EIO;
++	((RTMP_ADAPTER *)pAd)->ErrRecoveryCtl.cpu_participant_live = true;
++#endif
+ 	WLAN_HOOK_CALL(WLAN_HOOK_SYS_UP, pAd, NULL);
+ #ifdef WARP_512_SUPPORT
+ #ifdef WHNAT_SUPPORT
+@@ -439,6 +472,44 @@
+ 	return -1;
+ }
+ 
++int mt_wifi_open(VOID *dev)
++{
++	int result;
++#ifdef CONFIG_MTK_AP_BRIDGE
++	struct mtk_cpu_lifetime lifetime;
++	struct module *release = NULL;
++	RTMP_ADAPTER *ad = RTMP_OS_NETDEV_GET_PRIV((struct net_device *)dev);
++	mtk_cpu_destruct_enter(&lifetime);
++	if (!ad || !mtk_cpu_profile_restored() || READ_ONCE(ad->ErrRecoveryCtl.cpu_ser_error)) {
++		mtk_cpu_destruct_exit(&lifetime);
++		return -EIO;
++	}
++#endif
++	result = mt_wifi_open_impl(dev);
++#ifdef CONFIG_MTK_AP_BRIDGE
++	/* A failed open has no ndo_stop callback. Unwind only a checked idle HIF. */
++	if (result && ad && ad->ErrRecoveryCtl.cpu_proxy_module) {
++		if (ad->ErrRecoveryCtl.cpu_hif_live)
++			mtk_cpu_dma_fatal(MTK_CPU_DMA_INIT_EXPOSED, -EIO);
++		WLAN_HOOK_CALL(WLAN_HOOK_SYS_DOWN, ad, NULL);
++		if (!ad->ErrRecoveryCtl.cpu_proxy_release)
++			mtk_cpu_dma_fatal(MTK_CPU_DMA_CONTROL_RACE, -EIO);
++		release = ad->ErrRecoveryCtl.cpu_proxy_module;
++		ad->ErrRecoveryCtl.cpu_proxy_module = NULL;
++		ad->ErrRecoveryCtl.cpu_proxy_release = false;
++	}
++	if (result && ad && ad->ErrRecoveryCtl.cpu_participant_live) {
++		if (ad->ErrRecoveryCtl.cpu_hif_live || ad->ErrRecoveryCtl.cpu_proxy_module ||
++		    mtk_cpu_wifi_participant_set_live(ad, false))
++			mtk_cpu_dma_fatal(MTK_CPU_DMA_PROOF_LOST, -EBUSY);
++		ad->ErrRecoveryCtl.cpu_participant_live = false;
++	}
++	mtk_cpu_destruct_exit(&lifetime);
++	if (release) module_put(release);
++#endif
++	return result;
++}
++
+ int virtual_if_up_handler(VOID *dev)
+ {
+ 	struct net_device *net_dev = (struct net_device *)dev;
+@@ -663,7 +734,23 @@
+ 		return NULL;
+ 	}
+ 
++#ifdef CONFIG_MTK_AP_BRIDGE
++	((RTMP_ADAPTER *)pAd)->net_dev = net_dev;
++	if (mtk_ap_adapter_init((RTMP_ADAPTER *)pAd, net_dev)) {
++		((RTMP_ADAPTER *)pAd)->net_dev = NULL;
++		RtmpOSNetDevFree(net_dev);
++		return NULL;
++	}
++#endif
+ 	RTMP_DRIVER_NET_DEV_SET(pAd, net_dev);
++#ifdef CONFIG_MTK_AP_BRIDGE
++	if (!((RTMP_ADAPTER *)pAd)->net_dev) {
++		mtk_ap_adapter_exit((RTMP_ADAPTER *)pAd);
++		RTMP_OS_NETDEV_SET_WDEV(net_dev, NULL);
++		RtmpOSNetDevFree(net_dev);
++		return NULL;
++	}
++#endif
+ #if (KERNEL_VERSION(2, 6, 24) > LINUX_VERSION_CODE)
+ 	SET_MODULE_OWNER(net_dev);
+ #endif
+--- a/mt_wifi/os/linux/rt_profile.c
++++ b/mt_wifi/os/linux/rt_profile.c
+@@ -30,7 +30,7 @@
+ #include <linux/udma_api.h>
+ #endif/*RTMP_UDMA_SUPPORT*/
+ 
+-#if defined(BB_SOC) && defined(BB_RA_HWNAT_WIFI)
++#if defined(BB_SOC) && defined(BB_RA_HWNAT_WIFI) && !defined(CONFIG_MTK_AP_BRIDGE)
+ #include <linux/foe_hook.h>
+ #endif
+ 
+@@ -39,7 +39,7 @@
+ #endif /* RLM_CAL_CACHE_SUPPORT */
+ 
+ 
+-#ifdef CONFIG_FAST_NAT_SUPPORT
++#if defined(CONFIG_FAST_NAT_SUPPORT) && !defined(CONFIG_MTK_AP_BRIDGE)
+ #include <net/ra_nat.h>
+ #endif /*CONFIG_FAST_NAT_SUPPORT*/
+ 
+@@ -70,7 +70,7 @@
+ 
+ #if defined(CONFIG_WIFI_PKT_FWD) || defined(CONFIG_WIFI_PKT_FWD_MODULE)
+ UCHAR wf_apcli_active_links;
+-#if defined(CONFIG_FAST_NAT_SUPPORT)
++#if defined(CONFIG_FAST_NAT_SUPPORT) && !defined(CONFIG_MTK_AP_BRIDGE)
+ int (*wf_ra_sw_nat_hook_tx_bkup)(struct sk_buff *skb, int gmac_no);
+ int (*wf_ra_sw_nat_hook_rx_bkup)(struct sk_buff *skb);
+ #endif /*CONFIG_FAST_NAT_SUPPORT*/
+@@ -1819,7 +1819,7 @@
+ 	}
+ #endif
+ 
+-#ifdef CONFIG_FAST_NAT_SUPPORT
++#if defined(CONFIG_FAST_NAT_SUPPORT) && !defined(CONFIG_MTK_AP_BRIDGE)
+ 		if (ra_sw_nat_hook_rx) {
+ #ifdef WHNAT_SUPPORT
+ 			RTMP_CHIP_CAP *cap = hc_get_chip_cap(pAd->hdev_ctrl);
+@@ -1892,7 +1892,7 @@
+ 	automation_rx_payload_check(pAd, pRxPkt);
+ #endif /* AUTOMATION */
+ 
+-#if defined(BB_SOC) && defined(BB_RA_HWNAT_WIFI)
++#if defined(BB_SOC) && defined(BB_RA_HWNAT_WIFI) && !defined(CONFIG_MTK_AP_BRIDGE)
+ 
+ 	if (ra_sw_nat_hook_set_magic)
+ 		ra_sw_nat_hook_set_magic(pRxPkt, FOE_MAGIC_WLAN);
+@@ -2238,12 +2238,19 @@
+ 	/*do nothing for now*/
+ }
+ 
+-VOID RTMPFreeAdapter(VOID *pAdSrc)
++static VOID RTMPFreeAdapter_impl(VOID *pAdSrc)
+ {
+ 	PRTMP_ADAPTER pAd = (PRTMP_ADAPTER)pAdSrc;
+ 	POS_COOKIE os_cookie;
+ 	struct _PCI_HIF_T *hif;
+ 	int i;
++#ifdef CONFIG_MTK_AP_BRIDGE
++	/* The complete caller holds the global destructive admission. */
++	if (pAd->ErrRecoveryCtl.cpu_proxy_module || pAd->ErrRecoveryCtl.cpu_participant_live)
++		mtk_cpu_dma_fatal(MTK_CPU_DMA_CONTROL_RACE, -EBUSY);
++	mtk_ap_adapter_exit(pAd);
++	mtk_fe_reset_notifier_exit(pAd);
++#endif
+ 
+ #ifdef MULTI_INF_SUPPORT
+ 	multi_inf_adapt_unreg((VOID *) pAd);
+@@ -2343,6 +2350,18 @@
+ 		os_free_mem(os_cookie);
+ 
+ 	RTMPFreeGlobalUtility();
++}
++
++VOID RTMPFreeAdapter(VOID *pAdSrc)
++{
++#ifdef CONFIG_MTK_AP_BRIDGE
++	struct mtk_cpu_lifetime lifetime;
++	mtk_cpu_destruct_enter(&lifetime);
++#endif
++	RTMPFreeAdapter_impl(pAdSrc);
++#ifdef CONFIG_MTK_AP_BRIDGE
++	mtk_cpu_destruct_exit(&lifetime);
++#endif
+ }
+ 
+ 
+--- a/mt_wifi_ap/Makefile
++++ b/mt_wifi_ap/Makefile
+@@ -162,6 +162,7 @@
+ #		$(SRC_EMBEDDED_DIR)/common/cmm_mumimo.o\
+ ########################################################
+ cmm_objs := $(SRC_EMBEDDED_DIR)/common/action.o\
++		$(if $(filter y m,$(CONFIG_MTK_AP_BRIDGE)),$(SRC_EMBEDDED_DIR)/common/ap_bridge.o)\
+ 		$(SRC_EMBEDDED_DIR)/common/ra_ac_q_mgmt.o\
+ 		$(SRC_EMBEDDED_DIR)/common/ba_action.o\
+ 		$(SRC_EMBEDDED_DIR)/hw_ctrl/hdev_ctrl.o\
