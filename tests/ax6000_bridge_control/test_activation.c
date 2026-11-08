@@ -22,9 +22,9 @@
 #define DEV_OPT_ISOLATE 2
 #define DEV_OPT_LEARNING 4
 #define DEV_OPT_UNICAST_FLOOD 8
-struct uloop_timeout { void (*cb)(struct uloop_timeout *); };
-static void uloop_timeout_cancel(struct uloop_timeout *t) { (void)t; }
-static void uloop_timeout_set(struct uloop_timeout *t, int ms) { (void)t; (void)ms; }
+struct uloop_timeout { void (*cb)(struct uloop_timeout *); bool pending; };
+static void uloop_timeout_cancel(struct uloop_timeout *t) { t->pending = false; }
+static void uloop_timeout_set(struct uloop_timeout *t, int ms) { t->pending = true; assert(ms > 0); }
 struct ap_bridge_state;
 struct device_wireless_policy { bool wireless, ap, forwarding, proxyarp, isolate, bridge_isolate, multicast_set, multicast; };
 struct device {
@@ -43,7 +43,7 @@ struct device {
 };
 static struct device *devices[40];
 static unsigned ndev, stages, commits, prepares, gets;
-static bool ready, inaccessible, ambiguous_commit, ambiguous_prepare, reject_stage;
+static bool ready, inaccessible, ambiguous_commit, ambiguous_prepare, reject_stage, missing_mode;
 static uint64_t transaction, lease;
 #include "mtk_ap_bridge.h"
 uint64_t ap_bridge_port_flags(struct device *, struct device *);
@@ -67,7 +67,7 @@ static unsigned mock_index(const char *s)
 	return 0;
 }
 static int mock_open(const char *p, int flags, ...)
-{ (void)p; (void)flags; return 71; }
+{ (void)p; (void)flags; if (missing_mode) { errno = ENOENT; return -1; } return 71; }
 static ssize_t mock_read(int fd, void *buf, size_t n)
 { (void)fd; assert(n >= 9); memcpy(buf, "cpu-only\n", 9); return 9; }
 static int mock_close(int fd) { (void)fd; return 0; }
@@ -172,6 +172,51 @@ int main(void)
 	reset(32);
 	assert(!ap_bridge_prepare_new(&pool[0]));
 	assert(ap_bridge_commit(&pool[0]) == -E2BIG && !commits && !ready);
+	/* The actual config batch closes a previously committed owner only once;
+	 * child/member reconciliation cannot publish before the whole batch ends. */
+	reset(1);
+	assert(!ap_bridge_prepare_new(&pool[0]) && !ap_bridge_commit(&pool[0]));
+	unsigned old_commits = commits;
+	uint64_t old_lease = lease;
+	ap_bridge_config_begin();
+	assert(!ap_bridge_prepare(&pool[1]) && !ready);
+	ap_bridge_reconcile(&pool[0]);
+	assert(!pool[0].ap_bridge->retry.pending && commits == old_commits);
+	assert(!ap_bridge_config_end() && pool[0].ap_bridge->retry.pending);
+	pool[0].ap_bridge->retry.cb(&pool[0].ap_bridge->retry);
+	assert(ready && commits == old_commits + 1 && lease > old_lease && stages == 2);
+	/* A later fault blocks the whole touched batch, including a queued retry.
+	 * An unrelated event must not clear this failure and restore old policy. */
+	ap_bridge_config_begin();
+	assert(!ap_bridge_prepare(&pool[0]));
+	ap_bridge_fault(&pool[1], -EIO);
+	assert(ap_bridge_config_end() == -EIO && !ready);
+	old_commits = commits;
+	ap_bridge_reconcile(&pool[1]);
+	ap_retry(&pool[0].ap_bridge->retry);
+	assert(!ready && commits == old_commits && pool[0].ap_bridge->error == -EIO);
+	ap_bridge_config_begin();
+	assert(!ap_bridge_prepare(&pool[1]));
+	assert(!ap_bridge_config_end());
+	ap_retry(&pool[0].ap_bridge->retry);
+	assert(ready && commits == old_commits + 1);
+	/* Other products without the profile file retain legacy reload results. */
+	missing_mode = true;
+	unsigned unchanged_prepares = prepares;
+	ap_bridge_config_begin();
+	assert(!ap_bridge_prepare(&pool[0]) && prepares == unchanged_prepares);
+	ap_bridge_config_error(-EIO);
+	assert(!ap_bridge_config_end());
+	assert(!ap_reload_active && !ap_reload_error);
+	missing_mode = false;
+	/* Controlled wireless activation is never borrowed by a network reload. */
+	assert(!ap_bridge_prepare_new(&pool[0]));
+	ap_bridge_config_begin();
+	assert(!ap_bridge_prepare(&pool[1]) && !ap_bridge_config_end());
+	ap_retry(&pool[0].ap_bridge->retry);
+	assert(!ready && commits == old_commits + 1 && pool[0].ap_bridge->controlled);
+	assert(!ap_bridge_commit(&pool[0]));
+
 	reset(0);
 	pool[0].wireless_isolate = true;
 	pool[0].wireless_proxyarp = true;
