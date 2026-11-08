@@ -1,0 +1,996 @@
+--- a/drivers/net/ethernet/mediatek/mtk_hnat/Makefile
++++ b/drivers/net/ethernet/mediatek/mtk_hnat/Makefile
+@@ -6,4 +6,8 @@
+ ccflags-y=-Werror
+ 
+ obj-$(CONFIG_NET_MEDIATEK_HNAT)         += mtkhnat.o
++ifeq ($(CONFIG_MTK_AP_BRIDGE),y)
++mtkhnat-objs := hnat_cpu_profile.o hnat_cpu_api.o
++else
+ mtkhnat-objs := hnat.o hnat_nf_hook.o hnat_debugfs.o hnat_mcast.o hnat_stag.o hnat_api.o
++endif
+--- /dev/null
++++ b/drivers/net/ethernet/mediatek/mtk_hnat/hnat_cpu_api.c
+@@ -0,0 +1,316 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/* Fixed CPU product ABI: no resource hook or table writer is published. */
++#include <linux/module.h>
++#include <linux/err.h>
++#include <linux/errno.h>
++#include "hnat.h"
++#include "hnat_api.h"
++
++int (*ra_sw_nat_hook_rx)(struct sk_buff *skb) = NULL;
++EXPORT_SYMBOL(ra_sw_nat_hook_rx);
++
++int (*ra_sw_nat_hook_tx)(struct sk_buff *skb, int gmac_no) = NULL;
++EXPORT_SYMBOL(ra_sw_nat_hook_tx);
++
++void (*ra_sw_nat_clear_bind_entries)(void) = NULL;
++EXPORT_SYMBOL(ra_sw_nat_clear_bind_entries);
++
++int (*hnat_get_wdma_tx_port)(u32 wdma_idx) = NULL;
++EXPORT_SYMBOL(hnat_get_wdma_tx_port);
++
++int (*hnat_get_wdma_rx_port)(u32 wdma_idx) = NULL;
++EXPORT_SYMBOL(hnat_get_wdma_rx_port);
++
++int (*ppe_del_entry_by_mac)(unsigned char *mac) = NULL;
++EXPORT_SYMBOL(ppe_del_entry_by_mac);
++
++int (*ppe_del_entry_by_ip)(bool is_ipv4, void *addr) = NULL;
++EXPORT_SYMBOL(ppe_del_entry_by_ip);
++
++int (*ppe_del_entry_by_bssid_wcid)(u32 wdma_idx, u16 bssid, u16 wcid) = NULL;
++EXPORT_SYMBOL(ppe_del_entry_by_bssid_wcid);
++
++void (*ppe_dev_register_hook)(struct net_device *dev) = NULL;
++EXPORT_SYMBOL(ppe_dev_register_hook);
++
++void (*ppe_dev_unregister_hook)(struct net_device *dev) = NULL;
++EXPORT_SYMBOL(ppe_dev_unregister_hook);
++
++int (*mtk_tnl_encap_offload)(struct sk_buff *skb, struct ethhdr *eth) = NULL;
++EXPORT_SYMBOL(mtk_tnl_encap_offload);
++
++int (*mtk_tnl_decap_offload)(struct sk_buff *skb) = NULL;
++EXPORT_SYMBOL(mtk_tnl_decap_offload);
++
++bool (*mtk_tnl_decap_offloadable)(struct sk_buff *skb) = NULL;
++EXPORT_SYMBOL(mtk_tnl_decap_offloadable);
++
++bool (*mtk_crypto_offloadable)(struct sk_buff *skb) = NULL;
++EXPORT_SYMBOL(mtk_crypto_offloadable);
++
++int (*hnat_set_wdma_pse_port_state)(u32 wdma_idx, bool up) = NULL;
++EXPORT_SYMBOL(hnat_set_wdma_pse_port_state);
++
++struct foe_entry *hnat_get_foe_entry(u32 ppe_id, u32 index)
++{
++	return ERR_PTR(-EOPNOTSUPP);
++}
++EXPORT_SYMBOL(hnat_get_foe_entry);
++
++void hnat_cache_ebl(int enable)
++{
++	return;
++}
++EXPORT_SYMBOL(hnat_cache_ebl);
++
++int mtk_hnat_get_ppe_num(void)
++{
++	return -EOPNOTSUPP;
++}
++EXPORT_SYMBOL(mtk_hnat_get_ppe_num);
++
++int mtk_hnat_get_ppe_entry_num(void)
++{
++	return -EOPNOTSUPP;
++}
++EXPORT_SYMBOL(mtk_hnat_get_ppe_entry_num);
++
++int mtk_hnat_get_ppe_entry_by_index(struct hnat_tuple *opt)
++{
++	return -EOPNOTSUPP;
++}
++EXPORT_SYMBOL(mtk_hnat_get_ppe_entry_by_index);
++
++int mtk_hnat_calc_ppe_hash_index_by_tuple(struct hnat_tuple *opt)
++{
++	return -EOPNOTSUPP;
++}
++EXPORT_SYMBOL(mtk_hnat_calc_ppe_hash_index_by_tuple);
++
++int mtk_hnat_delete_entry_by_index(unsigned short ppe_index,
++				   unsigned short hash_index)
++{
++	return -EOPNOTSUPP;
++}
++EXPORT_SYMBOL(mtk_hnat_delete_entry_by_index);
++
++int mtk_hnat_get_mib_count_by_index(unsigned short ppe_index,
++				    unsigned short hash_index,
++				    unsigned long long *pkt_cnt,
++				    unsigned long long *byte_cnt)
++{
++	return -EOPNOTSUPP;
++}
++EXPORT_SYMBOL(mtk_hnat_get_mib_count_by_index);
++
++int mtk_hnat_update_hqos_by_index(unsigned short ppe_index,
++				  unsigned short hash_index,
++				  unsigned short fqos,
++				  unsigned short qid)
++{
++	return -EOPNOTSUPP;
++}
++EXPORT_SYMBOL(mtk_hnat_update_hqos_by_index);
++
++int mtk_hnat_update_hqos_by_skb(struct sk_buff *skb,
++				unsigned short fqos,
++				unsigned short qid)
++{
++	return -EOPNOTSUPP;
++}
++EXPORT_SYMBOL(mtk_hnat_update_hqos_by_skb);
++
++int mtk_hnat_update_dscp_by_index(unsigned short ppe_index,
++				  unsigned short hash_index,
++				  int dscp)
++{
++	return -EOPNOTSUPP;
++}
++EXPORT_SYMBOL(mtk_hnat_update_dscp_by_index);
++
++int mtk_hnat_update_dscp_by_skb(struct sk_buff *skb, int dscp)
++{
++	return -EOPNOTSUPP;
++}
++EXPORT_SYMBOL(mtk_hnat_update_dscp_by_skb);
++
++int mtk_hnat_update_vlan_by_index(unsigned short ppe_index,
++				  unsigned short hash_index,
++				  unsigned short vlan1,
++				  unsigned short vlan2)
++{
++	return -EOPNOTSUPP;
++}
++EXPORT_SYMBOL(mtk_hnat_update_vlan_by_index);
++
++int mtk_hnat_update_vlan_by_skb(struct sk_buff *skb,
++				unsigned short vlan1,
++				unsigned short vlan2)
++{
++	return -EOPNOTSUPP;
++}
++EXPORT_SYMBOL(mtk_hnat_update_vlan_by_skb);
++
++int mtk_hnat_update_pppoe_by_index(unsigned short ppe_index,
++				   unsigned short hash_index,
++				   unsigned short psn,
++				   unsigned short pppoe_id)
++{
++	return -EOPNOTSUPP;
++}
++EXPORT_SYMBOL(mtk_hnat_update_pppoe_by_index);
++
++int mtk_hnat_update_pppoe_by_skb(struct sk_buff *skb,
++				 unsigned short psn,
++				 unsigned short pppoe_id)
++{
++	return -EOPNOTSUPP;
++}
++EXPORT_SYMBOL(mtk_hnat_update_pppoe_by_skb);
++
++int mtk_hnat_update_is_prior_by_index(unsigned short ppe_index,
++				      unsigned short hash_index,
++				      unsigned short is_prior)
++{
++	return -EOPNOTSUPP;
++}
++EXPORT_SYMBOL(mtk_hnat_update_is_prior_by_index);
++
++int mtk_hnat_update_is_prior_by_skb(struct sk_buff *skb,
++				    unsigned short is_prior)
++{
++	return -EOPNOTSUPP;
++}
++EXPORT_SYMBOL(mtk_hnat_update_is_prior_by_skb);
++
++int mtk_hnat_update_tid_by_index(unsigned short ppe_index,
++				 unsigned short hash_index,
++				 unsigned short tid)
++{
++	return -EOPNOTSUPP;
++}
++EXPORT_SYMBOL(mtk_hnat_update_tid_by_index);
++
++int mtk_hnat_update_tid_by_skb(struct sk_buff *skb, unsigned short tid)
++{
++	return -EOPNOTSUPP;
++}
++EXPORT_SYMBOL(mtk_hnat_update_tid_by_skb);
++
++int mtk_hnat_register_bind_callback(void (*func)(struct hnat_tuple *))
++{
++	return -EOPNOTSUPP;
++}
++EXPORT_SYMBOL(mtk_hnat_register_bind_callback);
++
++int mtk_hnat_register_fin_callback(void (*func)(struct hnat_tuple *))
++{
++	return -EOPNOTSUPP;
++}
++EXPORT_SYMBOL(mtk_hnat_register_fin_callback);
++
++int mtk_hnat_get_fin_age_config(unsigned short ppe_index)
++{
++	return -EOPNOTSUPP;
++}
++EXPORT_SYMBOL(mtk_hnat_get_fin_age_config);
++
++int mtk_hnat_set_fin_age_config(unsigned short ppe_index, bool enable)
++{
++	return -EOPNOTSUPP;
++}
++EXPORT_SYMBOL(mtk_hnat_set_fin_age_config);
++
++int entry_delete(u32 ppe_id, int index)
++{
++	return -EOPNOTSUPP;
++}
++EXPORT_SYMBOL(entry_delete);
++
++struct hnat_accounting *hnat_get_count(struct mtk_hnat *h, u32 ppe_id,
++				       u32 index, struct hnat_accounting *diff)
++{
++	return NULL;
++}
++EXPORT_SYMBOL(hnat_get_count);
++
++int get_ppe_mib(u32 ppe_id, int index, u64 *pkt_cnt, u64 *byte_cnt)
++{
++	return -EOPNOTSUPP;
++}
++EXPORT_SYMBOL(get_ppe_mib);
++
++int is_entry_binding(u32 ppe_id, int index)
++{
++	return 0; /* No BIND is produced by this profile. */
++}
++EXPORT_SYMBOL(is_entry_binding);
++
++void foe_clear_crypto_entry(u32 cdrt_idx)
++{
++	return;
++}
++EXPORT_SYMBOL(foe_clear_crypto_entry);
++
++int hnat_bind_crypto_entry(struct sk_buff *skb, const struct net_device *dev, int fill_inner_info)
++{
++	return -EOPNOTSUPP;
++}
++EXPORT_SYMBOL(hnat_bind_crypto_entry);
++
++bool (*hnat_mcast_eth_ext_link_handle)(bool up) = NULL;
++EXPORT_SYMBOL(hnat_mcast_eth_ext_link_handle);
++
++int (*mtk_hnat_mcast_blist)(u8 *ip, u32 mask, bool add, bool is_ipv4) = NULL;
++EXPORT_SYMBOL(mtk_hnat_mcast_blist);
++
++int (*mtk_hnat_mcast_offload)(bool enable) = NULL;
++EXPORT_SYMBOL(mtk_hnat_mcast_offload);
++
++int mtk_npu_hnat_mcast_ops_register(struct npu_hnat_mcast_ops *hnat_mcast_ops)
++{
++	return -EOPNOTSUPP;
++}
++EXPORT_SYMBOL(mtk_npu_hnat_mcast_ops_register);
++
++int mtk_npu_hnat_mcast_ops_unregister(void)
++{
++	return -EOPNOTSUPP;
++}
++EXPORT_SYMBOL(mtk_npu_hnat_mcast_ops_unregister);
++
++void hnat_notify_mcast_sw_path(int group_idx)
++{
++	return;
++}
++EXPORT_SYMBOL(hnat_notify_mcast_sw_path);
++
++void hnat_notify_mcast_hw_path(int group_idx)
++{
++	return;
++}
++EXPORT_SYMBOL(hnat_notify_mcast_hw_path);
++
++int hnat_register_pcie_link_hook(bool (*hook_func)(bool up))
++{
++	return -EOPNOTSUPP;
++}
++EXPORT_SYMBOL(hnat_register_pcie_link_hook);
++
++void hnat_unregister_pcie_link_hook(void)
++{
++	return;
++}
++EXPORT_SYMBOL(hnat_unregister_pcie_link_hook);
++
++int hnat_register_wifi_info_hook(int (*hook_func)(u32 id, void *data))
++{
++	return -EOPNOTSUPP;
++}
++EXPORT_SYMBOL(hnat_register_wifi_info_hook);
++
++void hnat_unregister_wifi_info_hook(void)
++{
++	return;
++}
++EXPORT_SYMBOL(hnat_unregister_wifi_info_hook);
+--- /dev/null
++++ b/drivers/net/ethernet/mediatek/mtk_hnat/hnat_cpu_profile.c
+@@ -0,0 +1,344 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/* AX6000 fixed CPU forwarding product: permanently owned, empty FOE tables.
++ * This object replaces the legacy HNAT producer objects at Kbuild time.
++ */
++#include <linux/bitfield.h>
++#include <linux/dma-mapping.h>
++#include <linux/iopoll.h>
++#include <linux/module.h>
++#include <linux/mutex.h>
++#include <linux/mtk_cpu_profile.h>
++#include <linux/of_platform.h>
++#include <linux/platform_device.h>
++#include <linux/rtnetlink.h>
++#include "hnat.h"
++
++struct mtk_hnat *hnat_priv;
++static bool cpu_exposed;
++static bool cpu_published;
++static int cpu_error;
++static DEFINE_MUTEX(cpu_probe_lock);
++static bool cpu_claimed;
++
++/* Resource ownership does not follow enable, an ioctl, or a SER cycle. */
++static int cpu_write(void __iomem *reg, u32 value, u32 mask)
++{
++	writel(value, reg);
++	return (readl(reg) & mask) == (value & mask) ? 0 : -EIO;
++}
++
++static int cpu_gmacs(struct mtk_hnat *h)
++{
++	unsigned int i;
++	void __iomem *reg;
++	u32 value;
++	int ret;
++
++	for (i = 0; i < MTK_MAX_DEVS; i++) {
++		if (!h->eth->mac[i])
++			continue;
++		reg = h->fe_base + MTK_GDMA_FWD_CFG(i);
++		value = readl(reg) & ~GDM_ALL_FRC_MASK;
++		value |= BITS_GDM_ALL_FRC_P_CPU_PDMA;
++		ret = cpu_write(reg, value, GDM_ALL_FRC_MASK);
++		if (ret)
++			return ret;
++	}
++	return 0;
++}
++
++static int cpu_ppe(struct mtk_hnat *h, unsigned int i)
++{
++	void __iomem *base = h->ppe_base[i];
++	u32 value, table;
++	int ret;
++
++	/* No traffic is re-enabled by the FE owner until this checked restore
++	 * returns. The DMA allocation and its address never change after probe.
++	 */
++	value = readl(base + PPE_GLO_CFG);
++	value &= ~(PPE_EN | TSID_EN | TTL0_DRP | MCAST_TB_EN |
++		   NEW_IPV4_ID_INC_EN | SP_CMP_EN);
++	writel(value, base + PPE_GLO_CFG);
++	writel(0, base + PPE_FLOW_CFG);
++	ret = readl_poll_timeout(base + PPE_GLO_CFG, value,
++				 !(value & BIT(31)), 10, 1000000);
++	if (ret)
++		return ret;
++	ret = cpu_write(base + PPE_CAH_CTRL, 0, CAH_EN | CAH_X_MODE | CAH_REQ);
++	if (ret)
++		return ret;
++	ret = readl_poll_timeout(base + PPE_CAH_DBG, value,
++				 !(value & CAH_DBG_BUSY), 10, 100000);
++	if (ret)
++		return ret;
++	/* Invalidate with cache disabled, and keep it disabled. No preserved
++	 * cache-line writer, automatic learning or asynchronous refill exists.
++	 */
++	writel(CAH_X_MODE, base + PPE_CAH_CTRL);
++	ret = cpu_write(base + PPE_CAH_CTRL, 0, CAH_EN | CAH_X_MODE | CAH_REQ);
++	if (ret)
++		return ret;
++	ret = readl_poll_timeout(base + PPE_CAH_DBG, value,
++				 !(value & CAH_DBG_BUSY), 10, 100000);
++	if (ret)
++		return ret;
++	ret = cpu_write(base + PPE_FLOW_CFG, 0, U32_MAX);
++	if (ret)
++		return ret;
++	table = FIELD_PREP(TB_ETRY_NUM, h->etry_num_cfg) |
++		FIELD_PREP(TB_ENTRY_SIZE, ENTRY_96B) |
++		FIELD_PREP(SMA, SMA_ONLY_FWD_CPU);
++	ret = cpu_write(base + PPE_TB_CFG, table,
++		       TB_ETRY_NUM | TB_ENTRY_SIZE | SMA | NTU_AGE | UNBD_AGE |
++		       TCP_AGE | UDP_AGE | FIN_AGE | KA_CFG | SCAN_MODE | XMODE);
++	if (ret)
++		return ret;
++	ret = cpu_write(base + PPE_TB_BASE, lower_32_bits(h->foe_table_dev[i]), U32_MAX);
++	if (ret)
++		return ret;
++	ret = cpu_write(base + PPE_DFT_CPORT, 0, U32_MAX);
++	if (ret)
++		return ret;
++	ret = cpu_write(base + PPE_DFT_CPORT1, 0, U32_MAX);
++	if (ret)
++		return ret;
++	ret = cpu_write(base + PPE_KA, 0, U32_MAX);
++	if (ret)
++		return ret;
++	ret = cpu_write(base + PPE_BIND_LMT_0, 0, QURT_LMT | HALF_LMT);
++	if (ret)
++		return ret;
++	ret = cpu_write(base + PPE_BIND_LMT_1, 0, FULL_LMT | NTU_KA);
++	if (ret)
++		return ret;
++	ret = cpu_write(base + PPE_MIB_CFG, 0, MIB_EN | MIB_READ_CLEAR);
++	if (ret)
++		return ret;
++	ret = cpu_write(base + PPE_MIB_CAH_CTRL, 0, MIB_CAH_EN);
++	if (ret)
++		return ret;
++	ret = cpu_write(base + PPE_MIB_TB_BASE, 0, U32_MAX);
++	if (ret)
++		return ret;
++	ret = cpu_write(base + PPE_MCAST_PPSE, 0, U32_MAX);
++	if (ret)
++		return ret;
++	/* WED still has a valid PPE slow-path target. No entry is BIND, no
++	 * classifier builds entries, no multicast/sampling/HQOS producer runs.
++	 */
++	value = readl(base + PPE_GLO_CFG);
++	value &= ~(TSID_EN | TTL0_DRP | MCAST_TB_EN | NEW_IPV4_ID_INC_EN | SP_CMP_EN);
++	value |= PPE_EN;
++	ret = cpu_write(base + PPE_GLO_CFG, value,
++			PPE_EN | TSID_EN | TTL0_DRP | MCAST_TB_EN |
++			NEW_IPV4_ID_INC_EN | SP_CMP_EN);
++	if (ret)
++		return ret;
++	/* Preserve the WED -> PPE slow path, independent of optional hooks. */
++	value = i ? NR_PPE1_PORT : NR_PPE0_PORT;
++	base = h->fe_base + MTK_FE_GLO_CFG(value);
++	table = MTK_FE_LINK_DOWN_P(value);
++	return cpu_write(base, readl(base) & ~table, table);
++}
++
++static int hnat_cpu_restore(void *context)
++{
++	struct mtk_hnat *h = context;
++	size_t size = h->foe_etry_num * sizeof(struct foe_entry);
++	unsigned int i;
++	int ret;
++
++	ASSERT_RTNL();
++	if (cpu_error)
++		return cpu_error;
++	/* This profile has no legal writer. Unexpected content is a fault,
++	 * never an excuse to silently clear BINDs and report a healthy restore.
++	 */
++	dma_rmb();
++	for (i = 0; i < h->ppe_num; i++) {
++		if (!h->foe_table_cpu[i] || upper_32_bits(h->foe_table_dev[i]) ||
++		    memchr_inv(h->foe_table_cpu[i], 0, size)) {
++			ret = -EUCLEAN;
++			goto failed;
++		}
++	}
++	cpu_exposed = true; /* No error after the first HW touch may free tables. */
++	ret = cpu_gmacs(h);
++	if (ret)
++		goto failed;
++	for (i = 0; i < h->ppe_num; i++) {
++		ret = cpu_ppe(h, i);
++		if (ret)
++			goto failed;
++	}
++	return 0;
++failed:
++	cpu_error = ret;
++	mtk_cpu_profile_note_fault(ret);
++	return ret;
++}
++
++static const struct mtk_hnat_data hnat_cpu_data = {
++	.num_of_sch = 4,
++	.whnat = true,
++	.per_flow_accounting = false,
++	.mcast = false,
++	.version = MTK_HNAT_V2,
++};
++
++const struct of_device_id of_hnat_match[] = {
++	{ .compatible = "mediatek,mtk-hnat_v4", .data = &hnat_cpu_data },
++	{},
++};
++MODULE_DEVICE_TABLE(of, of_hnat_match);
++
++static int hnat_cpu_probe(struct platform_device *pdev)
++{
++	struct device_node *eth_node;
++	struct platform_device *eth_pdev;
++	struct mtk_hnat *h;
++	struct resource *res;
++	size_t size = DEF_ETRY_NUM * sizeof(struct foe_entry);
++	u32 ppe_num;
++	unsigned int i;
++	int ret;
++
++	BUILD_BUG_ON(sizeof(struct foe_entry) != 96);
++	mutex_lock(&cpu_probe_lock);
++	if (cpu_claimed) {
++		mutex_unlock(&cpu_probe_lock);
++		return -EBUSY;
++	}
++	cpu_claimed = true;
++	mutex_unlock(&cpu_probe_lock);
++	eth_node = of_parse_phandle(pdev->dev.of_node, "mtketh-soc", 0);
++	if (!eth_node) {
++		ret = -EINVAL;
++		goto unclaim;
++	}
++	eth_pdev = of_find_device_by_node(eth_node);
++	of_node_put(eth_node);
++	if (!eth_pdev) {
++		ret = -EPROBE_DEFER;
++		goto unclaim;
++	}
++	h = kzalloc(sizeof(*h), GFP_KERNEL);
++	if (!h) {
++		ret = -ENOMEM;
++		goto put_eth;
++	}
++	h->eth = platform_get_drvdata(eth_pdev);
++	if (!h->eth) {
++		ret = -EPROBE_DEFER;
++		goto free_context;
++	}
++	ret = of_property_read_u32(pdev->dev.of_node, "mtketh-ppe-num", &ppe_num);
++	if (ret || ppe_num != MAX_PPE_NUM || MAX_PPE_NUM != 2) {
++		ret = -EINVAL;
++		goto free_context;
++	}
++	h->dev = &pdev->dev;
++	h->data = &hnat_cpu_data;
++	h->ppe_num = ppe_num;
++	h->foe_etry_num = DEF_ETRY_NUM;
++	h->etry_num_cfg = DEF_ETRY_NUM_CFG;
++	h->wan_dsa_port = NONE_DSA_PORT;
++	spin_lock_init(&h->entry_lock);
++	spin_lock_init(&h->cah_lock);
++	spin_lock_init(&h->flow_entry_lock);
++	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
++	if (!res || resource_size(res) < 0x2800) {
++		ret = -EINVAL;
++		goto free_context;
++	}
++	h->fe_base = devm_ioremap(h->dev, res->start, resource_size(res));
++	if (!h->fe_base) {
++		ret = -ENOMEM;
++		goto free_context;
++	}
++	h->ppe_base[0] = h->fe_base + 0x2200;
++	h->ppe_base[1] = h->fe_base + 0x2600;
++	ret = dma_set_mask_and_coherent(h->dev, DMA_BIT_MASK(32));
++	if (ret)
++		goto free_context;
++	/* All allocations are complete and explicitly zero before any DMA BASE
++	 * is published. No per-flow, MIB or pending-bind allocations exist.
++	 */
++	for (i = 0; i < h->ppe_num; i++) {
++		h->foe_table_cpu[i] = dma_alloc_coherent(h->dev, size,
++						      &h->foe_table_dev[i], GFP_KERNEL);
++		if (!h->foe_table_cpu[i]) {
++			ret = -ENOMEM;
++			goto free_tables;
++		}
++		memset(h->foe_table_cpu[i], 0, size);
++		if (upper_32_bits(h->foe_table_dev[i])) {
++			ret = -EOVERFLOW;
++			goto free_tables;
++		}
++	}
++	dma_wmb();
++	hnat_priv = h;
++	platform_set_drvdata(pdev, h);
++	/* The same permanent callback owns cold preparation and every FE SER. */
++	rtnl_lock();
++	ret = hnat_cpu_restore(h);
++	if (!ret) {
++		/* Publication is a lifetime promise even if register returns error. */
++		cpu_published = true;
++		ret = mtk_cpu_profile_register(h->eth->dev, hnat_cpu_restore, h);
++	}
++	rtnl_unlock();
++	if (ret) {
++		cpu_error = ret;
++		mtk_cpu_profile_note_fault(ret);
++		dev_err(h->dev, "CPU profile fault %d; retaining permanent DMA ownership\n", ret);
++	}
++	if (cpu_exposed || cpu_published) {
++		/* A successful bind retains devres MMIO and context on HW failure.
++		 * This driver has no exit/unbind path; remove is fail-stop below.
++		 */
++		get_device(h->dev);
++		return 0;
++	}
++	hnat_priv = NULL;
++	platform_set_drvdata(pdev, NULL);
++free_tables:
++	for (i = 0; i < h->ppe_num; i++)
++		if (h->foe_table_cpu[i])
++			dma_free_coherent(h->dev, size, h->foe_table_cpu[i], h->foe_table_dev[i]);
++free_context:
++	kfree(h);
++put_eth:
++	put_device(&eth_pdev->dev);
++unclaim:
++	mutex_lock(&cpu_probe_lock);
++	cpu_claimed = false;
++	mutex_unlock(&cpu_probe_lock);
++	return ret;
++}
++
++static void hnat_cpu_remove(struct platform_device *pdev)
++{
++	/* No live control may release a published callback or DMA allocation. */
++	mtk_cpu_dma_fatal(MTK_CPU_DMA_CONTROL_RACE, -EBUSY);
++}
++
++static struct platform_driver hnat_cpu_driver = {
++	.probe = hnat_cpu_probe,
++	.remove = hnat_cpu_remove,
++	.driver = {
++		.name = "mediatek_soc_hnat",
++		.of_match_table = of_hnat_match,
++		.suppress_bind_attrs = true,
++	},
++};
++
++static int __init hnat_cpu_init(void)
++{
++	return platform_driver_register(&hnat_cpu_driver);
++}
++module_init(hnat_cpu_init); /* Deliberately no module_exit. */
++MODULE_LICENSE("GPL v2");
++MODULE_DESCRIPTION("AX6000 permanent CPU forwarding PPE slow-path profile");
+--- a/drivers/of/Kconfig
++++ b/drivers/of/Kconfig
+@@ -97,6 +97,7 @@
+ 	bool
+ 
+ config OF_OVERLAY
++	depends on !MTK_AP_BRIDGE
+ 	bool "Device Tree overlays"
+ 	select OF_DYNAMIC
+ 	select OF_FLATTREE
+--- /dev/null
++++ b/include/linux/mtk_cpu_lifecycle.h
+@@ -0,0 +1,208 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++#ifndef _LINUX_MTK_CPU_LIFECYCLE_H
++#define _LINUX_MTK_CPU_LIFECYCLE_H
++
++/* Value-only state transitions. Callers serialize them with the FE lock. */
++#ifdef __KERNEL__
++#include <linux/errno.h>
++#include <linux/stddef.h>
++#include <linux/types.h>
++#else
++#include <errno.h>
++#include <stdbool.h>
++#include <stddef.h>
++#endif
++
++#define MTK_CPU_LIFE_TEARDOWN 1U
++#define MTK_CPU_LIFE_SER_CLEANUP 2U
++#define MTK_CPU_CLEANUP_FE 1U
++#define MTK_CPU_CLEANUP_WIFI 2U
++
++struct mtk_cpu_lifetime {
++	unsigned long long cookie;
++	unsigned int kind;
++	unsigned int reserved;
++};
++
++struct mtk_cpu_life_state {
++	unsigned long long sequence;
++	unsigned long fe_actor;
++	unsigned long wifi_actor;
++	const void *wifi_owner;
++	unsigned long teardown_actor;
++	unsigned int teardown_depth;
++	unsigned int cleanup;
++};
++
++static inline bool mtk_cpu_life_active(const struct mtk_cpu_life_state *s)
++{
++	return s->fe_actor || s->wifi_actor || s->teardown_depth;
++}
++
++static inline int mtk_cpu_life_next(struct mtk_cpu_life_state *s)
++{
++	if (s->sequence == ~0ULL)
++		return -EOVERFLOW;
++	s->sequence++;
++	return 0;
++}
++
++static inline int mtk_cpu_life_begin_fe(struct mtk_cpu_life_state *s,
++				       unsigned long actor,
++				       unsigned long long *cookie)
++{
++	int err;
++
++	if (!actor || !cookie)
++		return -EINVAL;
++	if (mtk_cpu_life_active(s))
++		return -EBUSY;
++	err = mtk_cpu_life_next(s);
++	if (err)
++		return err;
++	s->fe_actor = actor;
++	s->cleanup = 0;
++	*cookie = s->sequence;
++	return 0;
++}
++
++static inline int mtk_cpu_life_begin_wifi(struct mtk_cpu_life_state *s,
++					 const void *owner, unsigned long actor,
++					 unsigned long long join,
++					 unsigned long long *cookie)
++{
++	int err;
++
++	if (!owner || !actor || !cookie)
++		return -EINVAL;
++	if (s->teardown_depth || s->wifi_actor || actor == s->fe_actor)
++		return -EBUSY;
++	if (join) {
++		if (!s->fe_actor || join != s->sequence)
++			return -ESTALE;
++	} else {
++		if (s->fe_actor)
++			return -EBUSY;
++		err = mtk_cpu_life_next(s);
++		if (err)
++			return err;
++		s->cleanup = 0;
++	}
++	s->wifi_actor = actor;
++	s->wifi_owner = owner;
++	*cookie = s->sequence;
++	return 0;
++}
++
++static inline unsigned int mtk_cpu_life_actor(const struct mtk_cpu_life_state *s,
++					     unsigned long actor)
++{
++	if (actor && actor == s->fe_actor)
++		return MTK_CPU_CLEANUP_FE;
++	if (actor && actor == s->wifi_actor)
++		return MTK_CPU_CLEANUP_WIFI;
++	return 0;
++}
++
++static inline int mtk_cpu_life_cleanup(struct mtk_cpu_life_state *s,
++				      unsigned long actor,
++				      unsigned long long cookie, bool enter)
++{
++	unsigned int bit = mtk_cpu_life_actor(s, actor);
++
++	if (!bit || cookie != s->sequence)
++		return -ESTALE;
++	if (!!(s->cleanup & bit) == enter)
++		return -EALREADY;
++	if (enter)
++		s->cleanup |= bit;
++	else
++		s->cleanup &= ~bit;
++	return 0;
++}
++
++static inline int mtk_cpu_life_end_fe(struct mtk_cpu_life_state *s,
++				     unsigned long actor,
++				     unsigned long long cookie)
++{
++	if (!actor || s->fe_actor != actor || cookie != s->sequence)
++		return -ESTALE;
++	if (s->cleanup & MTK_CPU_CLEANUP_FE)
++		return -EBUSY;
++	s->fe_actor = 0;
++	return 0;
++}
++
++static inline int mtk_cpu_life_end_wifi(struct mtk_cpu_life_state *s,
++				       const void *owner, unsigned long actor,
++				       unsigned long long cookie)
++{
++	if (!actor || s->wifi_actor != actor || s->wifi_owner != owner ||
++	    cookie != s->sequence)
++		return -ESTALE;
++	if (s->cleanup & MTK_CPU_CLEANUP_WIFI)
++		return -EBUSY;
++	s->wifi_actor = 0;
++	s->wifi_owner = NULL;
++	return 0;
++}
++
++static inline int mtk_cpu_life_destruct_enter(struct mtk_cpu_life_state *s,
++					     unsigned long actor,
++					     struct mtk_cpu_lifetime *permit)
++{
++	unsigned int bit;
++	int err;
++
++	if (!actor || !permit)
++		return -EINVAL;
++	if (s->fe_actor || s->wifi_actor) {
++		bit = mtk_cpu_life_actor(s, actor);
++		if (!bit || !(s->cleanup & bit))
++			return -EBUSY;
++		permit->kind = MTK_CPU_LIFE_SER_CLEANUP;
++	} else {
++		if (s->teardown_depth && s->teardown_actor != actor)
++			return -EBUSY;
++		if (s->teardown_depth == ~0U)
++			return -EOVERFLOW;
++		if (!s->teardown_depth) {
++			err = mtk_cpu_life_next(s);
++			if (err)
++				return err;
++			s->teardown_actor = actor;
++		}
++		s->teardown_depth++;
++		permit->kind = MTK_CPU_LIFE_TEARDOWN;
++	}
++	permit->cookie = s->sequence;
++	permit->reserved = 0;
++	return 0;
++}
++
++static inline int mtk_cpu_life_destruct_exit(struct mtk_cpu_life_state *s,
++					    unsigned long actor,
++					    struct mtk_cpu_lifetime *permit)
++{
++	unsigned int bit;
++
++	if (!permit || !permit->kind || permit->cookie != s->sequence)
++		return -ESTALE;
++	if (permit->kind == MTK_CPU_LIFE_SER_CLEANUP) {
++		bit = mtk_cpu_life_actor(s, actor);
++		if (!bit || !(s->cleanup & bit))
++			return -EPERM;
++	} else if (permit->kind == MTK_CPU_LIFE_TEARDOWN) {
++		if (!s->teardown_depth || s->teardown_actor != actor)
++			return -EPERM;
++		if (!--s->teardown_depth)
++			s->teardown_actor = 0;
++	} else {
++		return -EINVAL;
++	}
++	permit->cookie = 0;
++	permit->kind = 0;
++	return 0;
++}
++
++#endif
+--- /dev/null
++++ b/include/linux/mtk_cpu_profile.h
+@@ -0,0 +1,49 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++#ifndef _LINUX_MTK_CPU_PROFILE_H
++#define _LINUX_MTK_CPU_PROFILE_H
++
++#include <linux/types.h>
++#include <linux/mtk_cpu_lifecycle.h>
++
++struct device;
++
++enum mtk_cpu_dma_fault {
++	MTK_CPU_DMA_STOP_FAILED = 1,
++	MTK_CPU_DMA_CONTROL_RACE,
++	MTK_CPU_DMA_PROOF_LOST,
++	MTK_CPU_DMA_INIT_EXPOSED,
++};
++
++/* Single, permanent MT7986 FE owner for the AX6000 CPU forwarding profile. */
++bool mtk_cpu_profile_ready(void);
++bool mtk_cpu_profile_is_fatal(void);
++void mtk_cpu_profile_note_fault(int error);
++int mtk_cpu_profile_register(struct device *owner,
++			    int (*restore)(void *context), void *context);
++int mtk_cpu_profile_restore(void);
++bool mtk_cpu_profile_restored(void);
++
++#define MTK_FE_CPU_PROFILE_ABORT 0x2010
++bool mtk_cpu_control_permitted(const void *owner, u64 cookie);
++int mtk_cpu_wifi_participant_register(const void *physical_owner);
++/* Normal open/close lifetime only: true before the first DMA exposure;
++ * false only after checked stop and complete task/IRQ/token draining. */
++int mtk_cpu_wifi_participant_set_live(const void *physical_owner, bool live);
++void mtk_cpu_wifi_participant_unregister(const void *physical_owner);
++int mtk_cpu_wifi_stop_result(const void *physical_owner, u64 cookie,
++			     int error, bool stop_proven);
++
++int mtk_cpu_fe_ser_begin(u64 *cookie);
++u64 mtk_cpu_fe_ser_cookie(void);
++int mtk_cpu_wifi_ser_begin(const void *owner, u64 join_cookie, u64 *cookie);
++void mtk_cpu_fe_ser_end(u64 cookie);
++void mtk_cpu_wifi_ser_end(const void *owner, u64 cookie);
++int mtk_cpu_ser_cleanup_begin(u64 cookie);
++void mtk_cpu_ser_cleanup_end(u64 cookie);
++
++/* Hold across the complete destructive call, not just the initial check. */
++void mtk_cpu_destruct_enter(struct mtk_cpu_lifetime *lifetime);
++void mtk_cpu_destruct_exit(struct mtk_cpu_lifetime *lifetime);
++void __noreturn mtk_cpu_dma_fatal(enum mtk_cpu_dma_fault reason, int error);
++
++#endif
+--- /dev/null
++++ b/include/linux/mtk_warp_ser.h
+@@ -0,0 +1,33 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++#ifndef _LINUX_MTK_WARP_SER_H
++#define _LINUX_MTK_WARP_SER_H
++
++#include <linux/types.h>
++
++/* Synchronous, value-only D -> proxy -> W request; not a packet ABI. */
++enum mtk_warp_ser_phase {
++	MTK_WARP_SER_NONE,
++	MTK_WARP_SER_QUIESCE,
++	MTK_WARP_SER_STOP,
++	MTK_WARP_SER_CLEANUP,
++	MTK_WARP_SER_PREPARE,
++	MTK_WARP_SER_RESUME,
++	MTK_WARP_SER_COMPLETE,
++};
++
++struct mtk_warp_ser_request {
++	u64 cookie;
++	unsigned long deadline;
++	u32 phase;
++	u32 cancelled;
++	/* cmpxchg grant: 0 idle, 1 one mutation admitted, 2 cancelled forever. */
++	u32 permission;
++	int result;
++	u32 stop_proven;
++	u32 cleanup_done;
++};
++
++/* A positive vendor/FW status is an error too; only zero means success. */
++int warp_ser_checked(void *owner, struct mtk_warp_ser_request *request);
++
++#endif
+--- a/kernel/module/Kconfig
++++ b/kernel/module/Kconfig
+@@ -138,6 +138,7 @@
+ 	  and simpler.  If unsure, say Y.
+ 
+ config MODULE_FORCE_UNLOAD
++	depends on !MTK_AP_BRIDGE
+ 	bool "Forced module unloading"
+ 	depends on MODULE_UNLOAD
+ 	help

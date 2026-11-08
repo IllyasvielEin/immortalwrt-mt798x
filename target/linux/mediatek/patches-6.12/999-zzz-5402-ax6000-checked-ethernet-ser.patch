@@ -1,0 +1,1032 @@
+--- a/drivers/net/ethernet/mediatek/mtk_eth_reset.c
++++ b/drivers/net/ethernet/mediatek/mtk_eth_reset.c
+@@ -7,8 +7,422 @@
+ #include <linux/regmap.h>
+ #include "mtk_eth_soc.h"
+ #include "mtk_eth_reset.h"
++#if IS_ENABLED(CONFIG_MTK_AP_BRIDGE)
++#include <linux/mtk_cpu_profile.h>
++#include <linux/reboot.h>
++#include <linux/sched.h>
++#endif
+ 
+ struct mtk_eth *g_eth;
++
++#if IS_ENABLED(CONFIG_MTK_AP_BRIDGE)
++static DEFINE_SPINLOCK(cpu_profile_lock);
++static struct mtk_cpu_life_state cpu_life;
++static atomic_t cpu_profile_error = ATOMIC_INIT(0);
++static atomic_t cpu_profile_fatal = ATOMIC_INIT(0);
++static bool cpu_profile_configured;
++static const void *cpu_wifi_participant;
++static bool cpu_wifi_live;
++static const void *cpu_stop_owner;
++static u64 cpu_stop_cookie;
++static bool cpu_stop_waiting, cpu_stop_ack;
++static int cpu_stop_error;
++static DECLARE_COMPLETION(cpu_stop_done);
++static struct device *cpu_profile_owner;
++static int (*cpu_profile_restore_fn)(void *context);
++static void *cpu_profile_context;
++
++bool mtk_cpu_profile_is_fatal(void)
++{
++	return atomic_read(&cpu_profile_fatal) != 0;
++}
++EXPORT_SYMBOL(mtk_cpu_profile_is_fatal);
++
++bool mtk_cpu_profile_restored(void)
++{
++	return smp_load_acquire(&cpu_profile_configured) &&
++	       !atomic_read(&cpu_profile_error) && !mtk_cpu_profile_is_fatal();
++}
++EXPORT_SYMBOL(mtk_cpu_profile_restored);
++
++bool mtk_cpu_profile_ready(void)
++{
++	return mtk_cpu_profile_restored() && !READ_ONCE(cpu_life.fe_actor) &&
++	       !READ_ONCE(cpu_life.wifi_actor) &&
++	       !READ_ONCE(cpu_life.teardown_depth);
++}
++EXPORT_SYMBOL(mtk_cpu_profile_ready);
++
++void mtk_cpu_profile_note_fault(int error)
++{
++	if (error >= 0)
++		error = -EIO;
++	atomic_cmpxchg(&cpu_profile_error, 0, error);
++	smp_store_release(&cpu_profile_configured, false);
++}
++EXPORT_SYMBOL(mtk_cpu_profile_note_fault);
++
++void __noreturn mtk_cpu_dma_fatal(enum mtk_cpu_dma_fault reason, int error)
++{
++	/* Elect with local IRQs/preemption off: a same-CPU nested fault must
++	 * not park the selected reset executor before it reaches the firmware.
++	 * Never wait for a lock or run ordinary device shutdown from here.
++	 */
++	local_irq_disable();
++	preempt_disable();
++	if (!atomic_cmpxchg(&cpu_profile_fatal, 0, (int)reason ?: 1)) {
++		mtk_cpu_profile_note_fault(error);
++		reboot_mode = REBOOT_HARD;
++		machine_restart(NULL);
++	}
++	for (;;)
++		cpu_relax();
++}
++EXPORT_SYMBOL(mtk_cpu_dma_fatal);
++
++int mtk_cpu_profile_register(struct device *owner,
++			    int (*restore)(void *context), void *context)
++{
++	unsigned long flags;
++	int err = 0;
++
++	ASSERT_RTNL();
++	if (!owner || !restore || !context || !g_eth || g_eth->dev != owner)
++		return -EPROBE_DEFER;
++	spin_lock_irqsave(&cpu_profile_lock, flags);
++	if (cpu_profile_restore_fn || atomic_read(&cpu_profile_error) ||
++	    mtk_cpu_profile_is_fatal()) {
++		err = -EBUSY;
++	} else {
++		/* Permanent publication. The caller cannot free context or unload
++		 * its code after this point, even before a DMA address is exposed.
++		 */
++		cpu_profile_owner = get_device(owner);
++		cpu_profile_context = context;
++		cpu_profile_restore_fn = restore;
++		smp_store_release(&cpu_profile_configured, true);
++	}
++	spin_unlock_irqrestore(&cpu_profile_lock, flags);
++	return err;
++}
++EXPORT_SYMBOL(mtk_cpu_profile_register);
++
++int mtk_cpu_profile_restore(void)
++{
++	int err;
++
++	ASSERT_RTNL();
++	if (!cpu_profile_owner || !cpu_profile_restore_fn)
++		return -ENODEV;
++	if (atomic_read(&cpu_profile_error) || mtk_cpu_profile_is_fatal())
++		return -EIO;
++	smp_store_release(&cpu_profile_configured, false);
++	err = cpu_profile_restore_fn(cpu_profile_context);
++	if (err) {
++		mtk_cpu_profile_note_fault(err);
++		return err;
++	}
++	/* A concurrent native-descriptor fault cannot be overwritten by a
++	 * successful register readback from this control operation.
++	 */
++	spin_lock_bh(&cpu_profile_lock);
++	if (atomic_read(&cpu_profile_error) || mtk_cpu_profile_is_fatal())
++		err = -EIO;
++	else
++		smp_store_release(&cpu_profile_configured, true);
++	spin_unlock_bh(&cpu_profile_lock);
++	return err;
++}
++EXPORT_SYMBOL(mtk_cpu_profile_restore);
++
++int mtk_cpu_fe_ser_begin(u64 *cookie)
++{
++	unsigned long flags;
++	int err;
++
++	ASSERT_RTNL();
++	spin_lock_irqsave(&cpu_profile_lock, flags);
++	if (!mtk_cpu_profile_restored())
++		err = -EIO;
++	else
++		err = mtk_cpu_life_begin_fe(&cpu_life, (unsigned long)current,
++					    cookie);
++	if (!err)
++		smp_store_release(&cpu_profile_configured, false);
++	spin_unlock_irqrestore(&cpu_profile_lock, flags);
++	return err;
++}
++EXPORT_SYMBOL(mtk_cpu_fe_ser_begin);
++
++u64 mtk_cpu_fe_ser_cookie(void)
++{
++	unsigned long flags;
++	u64 cookie;
++
++	spin_lock_irqsave(&cpu_profile_lock, flags);
++	cookie = cpu_life.fe_actor ? cpu_life.sequence : 0;
++	spin_unlock_irqrestore(&cpu_profile_lock, flags);
++	return cookie;
++}
++EXPORT_SYMBOL(mtk_cpu_fe_ser_cookie);
++
++int mtk_cpu_wifi_ser_begin(const void *owner, u64 join_cookie, u64 *cookie)
++{
++	unsigned long flags;
++	int err;
++
++	spin_lock_irqsave(&cpu_profile_lock, flags);
++	if (atomic_read(&cpu_profile_error) || mtk_cpu_profile_is_fatal() ||
++	    !cpu_profile_restore_fn || cpu_wifi_participant != owner || !cpu_wifi_live)
++		err = -EIO;
++	else
++		err = mtk_cpu_life_begin_wifi(&cpu_life, owner,
++					      (unsigned long)current,
++					      join_cookie, cookie);
++	spin_unlock_irqrestore(&cpu_profile_lock, flags);
++	return err;
++}
++EXPORT_SYMBOL(mtk_cpu_wifi_ser_begin);
++
++void mtk_cpu_fe_ser_end(u64 cookie)
++{
++	unsigned long flags;
++	int err;
++
++	spin_lock_irqsave(&cpu_profile_lock, flags);
++	err = mtk_cpu_life_end_fe(&cpu_life, (unsigned long)current, cookie);
++	spin_unlock_irqrestore(&cpu_profile_lock, flags);
++	if (err)
++		mtk_cpu_dma_fatal(MTK_CPU_DMA_CONTROL_RACE, err);
++}
++EXPORT_SYMBOL(mtk_cpu_fe_ser_end);
++
++void mtk_cpu_wifi_ser_end(const void *owner, u64 cookie)
++{
++	unsigned long flags;
++	int err;
++
++	spin_lock_irqsave(&cpu_profile_lock, flags);
++	err = mtk_cpu_life_end_wifi(&cpu_life, owner,
++					(unsigned long)current, cookie);
++	spin_unlock_irqrestore(&cpu_profile_lock, flags);
++	if (err)
++		mtk_cpu_dma_fatal(MTK_CPU_DMA_CONTROL_RACE, err);
++}
++EXPORT_SYMBOL(mtk_cpu_wifi_ser_end);
++
++int mtk_cpu_ser_cleanup_begin(u64 cookie)
++{
++	unsigned long flags;
++	int err;
++
++	spin_lock_irqsave(&cpu_profile_lock, flags);
++	err = mtk_cpu_life_cleanup(&cpu_life, (unsigned long)current,
++				   cookie, true);
++	spin_unlock_irqrestore(&cpu_profile_lock, flags);
++	return err;
++}
++EXPORT_SYMBOL(mtk_cpu_ser_cleanup_begin);
++
++void mtk_cpu_ser_cleanup_end(u64 cookie)
++{
++	unsigned long flags;
++	int err;
++
++	spin_lock_irqsave(&cpu_profile_lock, flags);
++	err = mtk_cpu_life_cleanup(&cpu_life, (unsigned long)current,
++				   cookie, false);
++	spin_unlock_irqrestore(&cpu_profile_lock, flags);
++	if (err)
++		mtk_cpu_dma_fatal(MTK_CPU_DMA_CONTROL_RACE, err);
++}
++EXPORT_SYMBOL(mtk_cpu_ser_cleanup_end);
++
++void mtk_cpu_destruct_enter(struct mtk_cpu_lifetime *lifetime)
++{
++	unsigned long flags;
++	int err;
++
++	if (mtk_cpu_profile_is_fatal())
++		mtk_cpu_dma_fatal(MTK_CPU_DMA_CONTROL_RACE, -EIO);
++	spin_lock_irqsave(&cpu_profile_lock, flags);
++	err = mtk_cpu_life_destruct_enter(&cpu_life, (unsigned long)current,
++					   lifetime);
++	spin_unlock_irqrestore(&cpu_profile_lock, flags);
++	if (err || mtk_cpu_profile_is_fatal())
++		mtk_cpu_dma_fatal(MTK_CPU_DMA_CONTROL_RACE, err ?: -EIO);
++}
++EXPORT_SYMBOL(mtk_cpu_destruct_enter);
++
++void mtk_cpu_destruct_exit(struct mtk_cpu_lifetime *lifetime)
++{
++	unsigned long flags;
++	int err;
++
++	spin_lock_irqsave(&cpu_profile_lock, flags);
++	err = mtk_cpu_life_destruct_exit(&cpu_life, (unsigned long)current,
++					  lifetime);
++	spin_unlock_irqrestore(&cpu_profile_lock, flags);
++	if (err || mtk_cpu_profile_is_fatal())
++		mtk_cpu_dma_fatal(MTK_CPU_DMA_CONTROL_RACE, err ?: -EIO);
++}
++EXPORT_SYMBOL(mtk_cpu_destruct_exit);
++
++/* current alone is not authority in hard/soft IRQ context. */
++bool mtk_cpu_control_permitted(const void *owner, u64 cookie)
++{
++	unsigned long flags;
++	bool allowed;
++
++	if (in_interrupt())
++		return false;
++	spin_lock_irqsave(&cpu_profile_lock, flags);
++	allowed = !mtk_cpu_profile_is_fatal() &&
++		((cpu_life.teardown_actor == (unsigned long)current &&
++		  cpu_life.teardown_depth) ||
++		 (owner && cookie && cpu_life.wifi_actor == (unsigned long)current &&
++		  cpu_life.wifi_owner == owner && cpu_life.sequence == cookie &&
++		  (cpu_life.cleanup & MTK_CPU_CLEANUP_WIFI)));
++	spin_unlock_irqrestore(&cpu_profile_lock, flags);
++	return allowed;
++}
++EXPORT_SYMBOL(mtk_cpu_control_permitted);
++
++int mtk_cpu_wifi_participant_register(const void *owner)
++{
++	unsigned long flags;
++	int ret = 0;
++
++	if (!owner)
++		return -EINVAL;
++	spin_lock_irqsave(&cpu_profile_lock, flags);
++	if (cpu_wifi_participant)
++		ret = cpu_wifi_participant == owner ? 0 : -EEXIST;
++	else if (cpu_life.fe_actor || cpu_life.wifi_actor ||
++		 (cpu_life.teardown_depth &&
++		  cpu_life.teardown_actor != (unsigned long)current))
++		ret = -EBUSY;
++	else if (!mtk_cpu_profile_restored())
++		ret = -EAGAIN;
++	else {
++		cpu_wifi_participant = owner;
++		cpu_wifi_live = false; /* Registration precedes the first DMA exposure. */
++	}
++	spin_unlock_irqrestore(&cpu_profile_lock, flags);
++	return ret;
++}
++EXPORT_SYMBOL(mtk_cpu_wifi_participant_register);
++
++int mtk_cpu_wifi_participant_set_live(const void *owner, bool live)
++{
++	unsigned long flags;
++	int ret = 0;
++
++	spin_lock_irqsave(&cpu_profile_lock, flags);
++	if (!owner || cpu_wifi_participant != owner)
++		ret = -ENODEV;
++	else if (cpu_life.fe_actor || cpu_life.wifi_actor ||
++		 !cpu_life.teardown_depth ||
++		 cpu_life.teardown_actor != (unsigned long)current)
++		ret = -EBUSY;
++	else
++		cpu_wifi_live = live;
++	spin_unlock_irqrestore(&cpu_profile_lock, flags);
++	return ret;
++}
++EXPORT_SYMBOL(mtk_cpu_wifi_participant_set_live);
++
++
++void mtk_cpu_wifi_participant_unregister(const void *owner)
++{
++	unsigned long flags;
++	int ret = 0;
++
++	spin_lock_irqsave(&cpu_profile_lock, flags);
++	if (!owner || cpu_wifi_participant != owner || cpu_wifi_live || cpu_life.fe_actor ||
++	    cpu_life.wifi_actor || !cpu_life.teardown_depth ||
++	    cpu_life.teardown_actor != (unsigned long)current)
++		ret = -EBUSY;
++	else
++		cpu_wifi_participant = NULL;
++	spin_unlock_irqrestore(&cpu_profile_lock, flags);
++	if (ret)
++		mtk_cpu_dma_fatal(MTK_CPU_DMA_CONTROL_RACE, ret);
++}
++EXPORT_SYMBOL(mtk_cpu_wifi_participant_unregister);
++
++int mtk_cpu_wifi_stop_prepare(u64 cookie)
++{
++	unsigned long flags;
++	int ret;
++
++	ASSERT_RTNL();
++	reinit_completion(&cpu_stop_done);
++	spin_lock_irqsave(&cpu_profile_lock, flags);
++	if (!cookie || cookie != cpu_life.sequence || !cpu_life.fe_actor) {
++		ret = -ESTALE;
++	} else {
++		cpu_stop_owner = cpu_wifi_live ? cpu_wifi_participant : NULL;
++		cpu_stop_cookie = cookie;
++		cpu_stop_error = 0;
++		cpu_stop_ack = false;
++		cpu_stop_waiting = !!cpu_stop_owner;
++		ret = cpu_stop_waiting ? 1 : 0;
++	}
++	spin_unlock_irqrestore(&cpu_profile_lock, flags);
++	return ret;
++}
++
++int mtk_cpu_wifi_stop_result(const void *owner, u64 cookie,
++			     int error, bool proven)
++{
++	unsigned long flags;
++	bool wake = false;
++	int ret = 0;
++
++	/* Failure is sticky even outside the current FE stop-wait window. */
++	if (error || !proven) {
++		error = error < 0 ? error : -EIO;
++		mtk_cpu_profile_note_fault(error);
++	}
++	spin_lock_irqsave(&cpu_profile_lock, flags);
++	if (error || !proven) {
++		cpu_stop_error = error;
++		wake = true;
++		ret = error;
++	} else if (!cpu_stop_waiting || cpu_stop_ack || !owner ||
++		   owner != cpu_stop_owner || owner != cpu_wifi_participant ||
++		   cookie != cpu_stop_cookie || cookie != cpu_life.sequence ||
++		   cpu_life.wifi_owner != owner || !cpu_life.wifi_actor) {
++		ret = -ESTALE;
++	} else {
++		cpu_stop_ack = true;
++		wake = true;
++	}
++	spin_unlock_irqrestore(&cpu_profile_lock, flags);
++	if (wake)
++		complete(&cpu_stop_done);
++	return ret;
++}
++EXPORT_SYMBOL(mtk_cpu_wifi_stop_result);
++
++int mtk_cpu_wifi_stop_wait(unsigned long timeout)
++{
++	unsigned long flags;
++	int ret;
++
++	if (!wait_for_completion_timeout(&cpu_stop_done, timeout))
++		return -ETIMEDOUT;
++	spin_lock_irqsave(&cpu_profile_lock, flags);
++	ret = cpu_stop_error ?: atomic_read(&cpu_profile_error);
++	if (!ret && !cpu_stop_ack)
++		ret = -EIO;
++	cpu_stop_waiting = false;
++	spin_unlock_irqrestore(&cpu_profile_lock, flags);
++	return ret;
++}
++
++#endif
+ 
+ static int mtk_rest_cnt;
+ int mtk_wifi_num;
+@@ -39,6 +453,25 @@
+ static int mtk_eth_netdevice_event(struct notifier_block *n, unsigned long event, void *ptr)
+ {
+ 	struct mtk_eth *eth = container_of(n, struct mtk_eth, reset.netdevice_notifier);
++
++#if IS_ENABLED(CONFIG_MTK_AP_BRIDGE)
++	if (event == MTK_FE_STOP_TRAFFIC_DONE_FAIL) {
++		mtk_cpu_wifi_stop_result(NULL, 0, -EIO, false);
++		return NOTIFY_DONE;
++	}
++	if (event == MTK_FE_START_RESET_INIT) {
++		if (!mtk_cpu_profile_ready() || test_bit(MTK_RESETTING, &eth->state))
++			return NOTIFY_BAD;
++		eth->reset.event = MTK_FE_START_RESET;
++		mtk_reset_event_update(eth, MTK_EVENT_FORCE);
++		schedule_work(&eth->pending_work);
++		return NOTIFY_DONE;
++	}
++	if (event == MTK_WIFI_RESET_DONE || event == MTK_FE_STOP_TRAFFIC_DONE ||
++	    event == MTK_WIFI_CHIP_ONLINE || event == MTK_WIFI_CHIP_OFFLINE ||
++	    event == MTK_WIFI_L1SER_DONE)
++		return NOTIFY_DONE;
++#endif
+ 
+ 	switch (event) {
+ 	case MTK_TOPS_DUMP_DONE:
+--- a/drivers/net/ethernet/mediatek/mtk_eth_reset.h
++++ b/drivers/net/ethernet/mediatek/mtk_eth_reset.h
+@@ -6,6 +6,8 @@
+ 
+ #ifndef MTK_ETH_RESET_H
+ #define MTK_ETH_RESET_H
++
++#include <linux/mtk_cpu_profile.h>
+ 
+ /* Frame Engine Reset FSM */
+ #define MTK_FE_START_RESET		(0x2000)
+@@ -22,6 +24,12 @@
+ #define MTK_TOPS_DUMP_DONE		(0x3001)
+ #define MTK_FE_RESET_NAT_DONE		(0x4001)
+ 
++/* CPU product: cancellation notification, never a success/DMA restart. */
++#define MTK_CPU_WIFI_STOP_TIMEOUT_MS	5000
++
++int mtk_cpu_wifi_stop_prepare(u64 cookie);
++int mtk_cpu_wifi_stop_wait(unsigned long timeout);
++
+ extern struct completion wait_ser_done;
+ extern struct completion wait_ack_done;
+ extern struct completion wait_tops_done;
+--- a/drivers/net/ethernet/mediatek/mtk_eth_soc.c
++++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.c
+@@ -43,6 +43,7 @@
+ #if defined(CONFIG_NET_MEDIATEK_HNAT) || defined(CONFIG_NET_MEDIATEK_HNAT_MODULE)
+ #include "mtk_hnat/nf_hnat_mtk.h"
+ #endif
++#include <linux/mtk_cpu_profile.h>
+ 
+ static int mtk_msg_level = -1;
+ module_param_named(msg_level, mtk_msg_level, int, 0);
+@@ -2822,6 +2823,27 @@
+ 	return act;
+ }
+ 
++#if IS_ENABLED(CONFIG_MTK_AP_BRIDGE)
++static bool mtk_cpu_rx_consume(struct mtk_eth *eth, u32 reason, u32 sport)
++{
++	if (reason == HIT_BIND_KEEPALIVE_DUP_OLD_HDR)
++		return true;
++	if (reason == HIT_BIND_KEEPALIVE_UC_OLD_HDR ||
++	    reason == HIT_BIND_KEEPALIVE_MC_NEW_HDR ||
++	    reason == HIT_BIND_FORCE_TO_CPU ||
++	    reason == HIT_BIND_MULTICAST_TO_CPU ||
++	    reason == HIT_BIND_MULTICAST_TO_GMAC_CPU ||
++	    reason == HIT_BIND_PACKET_SAMPLING || sport == PSE_QDMA_TX_PORT) {
++		mtk_cpu_profile_note_fault(-EPROTO);
++		dev_warn_ratelimited(eth->dev, "CPU profile private RX reason=%x port=%u\n",
++				     reason, sport);
++		return true;
++	}
++	return false;
++}
++
++#endif
++
+ static int mtk_poll_rx(struct napi_struct *napi, int budget,
+ 		       struct mtk_eth *eth)
+ {
+@@ -2881,6 +2903,16 @@
+ 			mac = sport - 1;
+ 		}
+ 
++#if IS_ENABLED(CONFIG_MTK_AP_BRIDGE)
++		{
++			reason = mtk_is_netsys_v3_or_greater(eth) ?
++				 FIELD_GET(MTK_RXD5_PPE_CPU_REASON, trxd.rxd5) :
++				 FIELD_GET(MTK_RXD4_PPE_CPU_REASON, trxd.rxd4);
++			if (mtk_cpu_rx_consume(eth, reason, sport))
++				goto release_desc;
++		}
++#endif
++
+ 		if (unlikely(sport == PSE_QDMA_TX_PORT)) {
+ 			/* sanity check */
+ 			if (unlikely(!rx_ppdev))
+@@ -2989,6 +3021,7 @@
+ 			skb_put(skb, pktlen);
+ 
+ #if defined(CONFIG_NET_MEDIATEK_HNAT) || defined(CONFIG_NET_MEDIATEK_HNAT_MODULE)
++			if (!IS_ENABLED(CONFIG_MTK_AP_BRIDGE)) {
+ 			if (mtk_is_netsys_v3_or_greater(eth))
+ 				*(u32 *)(skb->head) = trxd.rxd5;
+ 			else
+@@ -3039,6 +3072,9 @@
+ 			trace_printk("[%s] rxd:(entry=%x,sport=%x,reason=%x,alg=%x\n",
+ 				     __func__, skb_hnat_entry(skb), skb_hnat_sport(skb),
+ 				     skb_hnat_reason(skb), skb_hnat_alg(skb));
++			} else {
++				skb_hnat_magic_tag(skb) = 0;
++			}
+ #endif
+ 		}
+ 
+@@ -4425,10 +4461,21 @@
+ 	return 0;
+ }
+ 
++static int mtk_stop_dma(struct mtk_eth *eth, u32 glo_cfg);
++
+ static void mtk_dma_free(struct mtk_eth *eth)
+ {
+ 	const struct mtk_soc_data *soc = eth->soc;
+ 	int i, j, txqs = 1;
++#if IS_ENABLED(CONFIG_MTK_AP_BRIDGE)
++	struct mtk_cpu_lifetime lifetime = {};
++
++	mtk_cpu_destruct_enter(&lifetime);
++	if ((MTK_HAS_CAPS(eth->soc->caps, MTK_QDMA) &&
++	     mtk_stop_dma(eth, eth->soc->reg_map->qdma.glo_cfg)) ||
++	    mtk_stop_dma(eth, eth->soc->reg_map->pdma.glo_cfg))
++		mtk_cpu_dma_fatal(MTK_CPU_DMA_STOP_FAILED, -ETIMEDOUT);
++#endif
+ 
+ 	if (MTK_HAS_CAPS(eth->soc->caps, MTK_QDMA))
+ 		txqs = MTK_QDMA_NUM_QUEUES;
+@@ -4469,6 +4516,9 @@
+ 		kfree(eth->fq_ring.scratch_head[i]);
+ 		eth->fq_ring.scratch_head[i] = NULL;
+ 	}
++#if IS_ENABLED(CONFIG_MTK_AP_BRIDGE)
++	mtk_cpu_destruct_exit(&lifetime);
++#endif
+ }
+ 
+ static bool mtk_hw_reset_check(struct mtk_eth *eth)
+@@ -4858,12 +4908,33 @@
+ 	}
+ }
+ 
++static int mtk_open_impl(struct net_device *dev);
++
+ static int mtk_open(struct net_device *dev)
++{
++	int ret;
++#if IS_ENABLED(CONFIG_MTK_AP_BRIDGE)
++	struct mtk_cpu_lifetime lifetime = {};
++
++	/* New DMA/IRQ exposure is serialized with WiFi SER and teardown too. */
++	mtk_cpu_destruct_enter(&lifetime);
++#endif
++	ret = mtk_open_impl(dev);
++#if IS_ENABLED(CONFIG_MTK_AP_BRIDGE)
++	mtk_cpu_destruct_exit(&lifetime);
++#endif
++	return ret;
++}
++
++static int mtk_open_impl(struct net_device *dev)
+ {
+ 	struct mtk_mac *mac = netdev_priv(dev);
+ 	struct mtk_eth *eth = mac->hw;
+ 	struct mtk_mac *target_mac;
+ 	int i, err;
++
++	if (IS_ENABLED(CONFIG_MTK_AP_BRIDGE) && !mtk_cpu_profile_restored())
++		return -EAGAIN;
+ 
+ 	/* we run 2 netdevs on the same dma ring so we only bring it up once */
+ 	if (!refcount_read(&eth->dma_refcnt)) {
+@@ -4885,12 +4956,12 @@
+ 				continue;
+ 
+ 			target_mac = netdev_priv(eth->netdev[i]);
+-			if (!soc->offload_version)
++			if (IS_ENABLED(CONFIG_MTK_AP_BRIDGE) || !soc->offload_version)
+ 				gdm_config = MTK_GDMA_TO_PDMA;
+ 			else
+ 				gdm_config = soc->reg_map->gdma_to_ppe[target_mac->ppe_idx];
+ 
+-			if (eth->l4s_toggle)
++			if (!IS_ENABLED(CONFIG_MTK_AP_BRIDGE) && eth->l4s_toggle)
+ 				gdm_config = MTK_GDMA_TO_TDMA;
+ 
+ 			mtk_gdm_config(eth, target_mac->id, gdm_config);
+@@ -4972,7 +5043,7 @@
+ 	return 0;
+ }
+ 
+-static void mtk_stop_dma(struct mtk_eth *eth, u32 glo_cfg)
++static int mtk_stop_dma(struct mtk_eth *eth, u32 glo_cfg)
+ {
+ 	u32 val;
+ 	int i;
+@@ -4984,6 +5055,10 @@
+ 		glo_cfg);
+ 	spin_unlock_bh(&eth->page_lock);
+ 
++	if (IS_ENABLED(CONFIG_MTK_AP_BRIDGE) &&
++	    (mtk_r32(eth, glo_cfg) & (MTK_RX_DMA_EN | MTK_TX_DMA_EN)))
++		return -EIO;
++
+ 	/* wait for dma stop */
+ 	for (i = 0; i < 10; i++) {
+ 		val = mtk_r32(eth, glo_cfg);
+@@ -4993,6 +5068,7 @@
+ 		}
+ 		break;
+ 	}
++	return i == 10 ? -ETIMEDOUT : 0;
+ }
+ 
+ static int mtk_stop(struct net_device *dev)
+@@ -5000,6 +5076,16 @@
+ 	struct mtk_mac *mac = netdev_priv(dev);
+ 	struct mtk_eth *eth = mac->hw;
+ 	int i;
++#if IS_ENABLED(CONFIG_MTK_AP_BRIDGE)
++	int error;
++#endif
++#if IS_ENABLED(CONFIG_MTK_AP_BRIDGE)
++	struct mtk_cpu_lifetime lifetime = {};
++
++	mtk_cpu_destruct_enter(&lifetime);
++	if (!refcount_read(&eth->dma_refcnt))
++		goto out;
++#endif
+ 
+ 	netif_tx_disable(dev);
+ 
+@@ -5015,7 +5101,7 @@
+ 
+ 	/* only shutdown DMA if this is the last user */
+ 	if (!refcount_dec_and_test(&eth->dma_refcnt))
+-		return 0;
++		goto out;
+ 
+ 	for (i = 0; i < MTK_MAX_DEVS; i++)
+ 		mtk_gdm_config(eth, i, MTK_GDMA_DROP_ALL);
+@@ -5043,9 +5129,20 @@
+ 	cancel_work_sync(&eth->rx_dim.work);
+ 	cancel_work_sync(&eth->tx_dim.work);
+ 
++#if IS_ENABLED(CONFIG_MTK_AP_BRIDGE)
++	if (MTK_HAS_CAPS(eth->soc->caps, MTK_QDMA)) {
++		error = mtk_stop_dma(eth, eth->soc->reg_map->qdma.glo_cfg);
++		if (error)
++			mtk_cpu_dma_fatal(MTK_CPU_DMA_STOP_FAILED, error);
++	}
++	error = mtk_stop_dma(eth, eth->soc->reg_map->pdma.glo_cfg);
++	if (error)
++		mtk_cpu_dma_fatal(MTK_CPU_DMA_STOP_FAILED, error);
++#else
+ 	if (MTK_HAS_CAPS(eth->soc->caps, MTK_QDMA))
+ 		mtk_stop_dma(eth, eth->soc->reg_map->qdma.glo_cfg);
+ 	mtk_stop_dma(eth, eth->soc->reg_map->pdma.glo_cfg);
++#endif
+ 
+ 	if (MTK_HAS_CAPS(eth->soc->caps, MTK_HWTSTAMP))
+ 		mtk_ptp_clock_deinit(eth);
+@@ -5057,6 +5154,10 @@
+ 		mtk_ppe_stop(eth->ppe[i]);
+ #endif
+ 
++out:
++#if IS_ENABLED(CONFIG_MTK_AP_BRIDGE)
++	mtk_cpu_destruct_exit(&lifetime);
++#endif
+ 	return 0;
+ }
+ 
+@@ -5361,7 +5462,7 @@
+ 	return val;
+ }
+ 
+-static void mtk_hw_warm_reset(struct mtk_eth *eth)
++static void __maybe_unused mtk_hw_warm_reset(struct mtk_eth *eth)
+ {
+ 	u32 rst_mask, val;
+ 
+@@ -5415,6 +5516,52 @@
+ 		dev_err(eth->dev, "warm reset stage1 failed %08x (%08x)\n",
+ 			val, rst_mask);
+ }
++
++#if IS_ENABLED(CONFIG_MTK_AP_BRIDGE)
++static int mtk_cpu_reset_mask(struct mtk_eth *eth, u32 mask, bool assert)
++{
++	u32 val;
++	int ret;
++
++	ret = regmap_update_bits(eth->ethsys, ETHSYS_RSTCTRL, mask,
++				 assert ? mask : 0);
++	if (ret)
++		return ret;
++	return regmap_read_poll_timeout(eth->ethsys, ETHSYS_RSTCTRL, val,
++				       (val & mask) == (assert ? mask : 0), 1, 1000);
++}
++
++static int mtk_cpu_hw_reset(struct mtk_eth *eth, bool warm)
++{
++	u32 mask = RSTCTRL_PPE0_V2;
++	int ret;
++
++	if (MTK_HAS_CAPS(eth->soc->caps, MTK_RSTCTRL_PPE1))
++		mask |= RSTCTRL_PPE1;
++	if (!warm || mtk_phy_should_powerdown(eth))
++		mask |= RSTCTRL_ETH;
++	if (!warm) {
++		ret = regmap_write(eth->ethsys, ETHSYS_FE_RST_CHK_IDLE_EN, 0);
++		if (ret)
++			return ret;
++	}
++	ret = mtk_cpu_reset_mask(eth, RSTCTRL_FE, true);
++	if (ret)
++		return ret;
++	ret = mtk_cpu_reset_mask(eth, mask, true);
++	if (ret)
++		return ret;
++	udelay(1);
++	ret = mtk_cpu_reset_mask(eth, mask | RSTCTRL_FE, false);
++	if (ret)
++		return ret;
++	if (!warm) {
++		mdelay(10);
++		ret = regmap_write(eth->ethsys, ETHSYS_FE_RST_CHK_IDLE_EN, 0x3ffffff);
++	}
++	return ret;
++}
++#endif
+ 
+ static inline u16 mtk_get_iq_sta(struct mtk_eth *eth, int port)
+ {
+@@ -5656,7 +5803,8 @@
+ 	struct mtk_eth *eth = container_of(del_work, struct mtk_eth,
+ 					   reset.monitor_work);
+ 
+-	if (test_bit(MTK_RESETTING, &eth->state))
++	if (test_bit(MTK_RESETTING, &eth->state) ||
++	    (IS_ENABLED(CONFIG_MTK_AP_BRIDGE) && !mtk_cpu_profile_ready()))
+ 		goto out;
+ 
+ 	/* DMA stuck checks */
+@@ -5740,10 +5888,16 @@
+ 
+ 	msleep(100);
+ 
++#if IS_ENABLED(CONFIG_MTK_AP_BRIDGE)
++	ret = mtk_cpu_hw_reset(eth, reset);
++	if (ret)
++		goto err_disable_pm;
++#else
+ 	if (reset)
+ 		mtk_hw_warm_reset(eth);
+ 	else
+ 		mtk_hw_reset(eth);
++#endif
+ 
+ 	/* No MT7628/88 support yet */
+ 	if (reset && !MTK_HAS_CAPS(eth->soc->caps, MTK_SOC_MT7628))
+@@ -6129,6 +6283,8 @@
+ static int mtk_siocdevprivate(struct net_device *dev, struct ifreq *ifr,
+ 			      void __user *data, int cmd)
+ {
++	if (IS_ENABLED(CONFIG_MTK_AP_BRIDGE))
++		return -EOPNOTSUPP;
+ 	return mtk_eth_debugfs_priv_ioctl(dev, ifr, cmd);
+ }
+ 
+@@ -6173,11 +6329,136 @@
+ 	}
+ }
+ 
++#if IS_ENABLED(CONFIG_MTK_AP_BRIDGE)
++static void mtk_cpu_pending_work(struct mtk_eth *eth)
++{
++	unsigned long restart = 0, opened = 0;
++	u64 cookie;
++	bool cleanup = false;
++	struct net_device *notify = NULL;
++	int i, expected, err;
++
++	rtnl_lock();
++	/* No hardware touch precedes lifecycle admission/notready publication. */
++	err = mtk_cpu_fe_ser_begin(&cookie);
++	if (err) {
++		/* A normal teardown already owns these resources. Do not race it. */
++		if (err != -EBUSY)
++			mtk_cpu_profile_note_fault(err);
++		rtnl_unlock();
++		return;
++	}
++	set_bit(MTK_RESETTING, &eth->state);
++	eth->reset.event = MTK_FE_START_RESET; /* MT7986 implements this event. */
++	mtk_reset_event_update(eth, MTK_EVENT_TOTAL_CNT);
++	for (i = 0; i < MTK_MAX_DEVS; i++)
++		if (eth->netdev[i]) {
++			notify = eth->netdev[i];
++			break;
++		}
++	expected = mtk_cpu_wifi_stop_prepare(cookie);
++	if (expected < 0) {
++		err = expected;
++		goto failed;
++	}
++	if (expected) {
++		if (!notify)
++			mtk_cpu_dma_fatal(MTK_CPU_DMA_PROOF_LOST, -ENODEV);
++		call_netdevice_notifiers(MTK_FE_START_RESET, notify);
++		rtnl_unlock();
++		err = mtk_cpu_wifi_stop_wait(msecs_to_jiffies(MTK_CPU_WIFI_STOP_TIMEOUT_MS));
++		if (err) {
++			/* Missing/failed STOP means DMA may still own every old ring.
++			 * Do not wait for RTNL, free resources, or run normal shutdown.
++			 */
++			mtk_cpu_profile_note_fault(err);
++			mtk_cpu_dma_fatal(MTK_CPU_DMA_STOP_FAILED, err);
++		}
++		rtnl_lock();
++	}
++	/* The physical participant is stopped. All planned nested DMA cleanup
++	 * belongs to this exact FE task/cookie, not an arbitrary ndo_stop.
++	 */
++	err = mtk_cpu_ser_cleanup_begin(cookie);
++	if (err)
++		mtk_cpu_dma_fatal(MTK_CPU_DMA_CONTROL_RACE, err);
++	cleanup = true;
++	mtk_hw_dump_all(eth);
++	mtk_save_qdma_cfg(eth);
++	mtk_prepare_for_reset(eth);
++	for (i = 0; i < MTK_MAX_DEVS; i++) {
++		if (!eth->netdev[i] || !netif_running(eth->netdev[i]))
++			continue;
++		mtk_stop(eth->netdev[i]); /* checked idle before any DMA free */
++		__set_bit(i, &restart);
++	}
++	usleep_range(15000, 16000);
++	if (eth->dev->pins) {
++		err = pinctrl_select_state(eth->dev->pins->p,
++					   eth->dev->pins->default_state);
++		if (err)
++			goto failed;
++	}
++	err = mtk_hw_init(eth, true);
++	if (err)
++		goto failed;
++	/* Required before the first internal open and any successful WiFi DONE.
++	 * The CPU helper never allocates/replaces tables or publishes hooks.
++	 */
++	err = mtk_cpu_profile_restore();
++	if (err)
++		goto failed;
++	for (i = 0; i < MTK_MAX_DEVS; i++) {
++		if (!eth->netdev[i] || !test_bit(i, &restart))
++			continue;
++		err = mtk_open(eth->netdev[i]);
++		if (err) {
++			/* open may have started shared DMA before a PHY failure. */
++			mtk_stop(eth->netdev[i]);
++			goto failed;
++		}
++		__set_bit(i, &opened);
++	}
++	mtk_mac_fe_reset_complete(eth, restart);
++	mtk_restore_qdma_cfg(eth);
++	mtk_cpu_ser_cleanup_end(cookie);
++	cleanup = false;
++	/* No wait for a final N9 ACK and no legacy NAT_DONE/warm-init path. */
++	if (expected)
++		call_netdevice_notifiers(MTK_FE_RESET_DONE, notify);
++	clear_bit(MTK_RESETTING, &eth->state);
++	mtk_cpu_fe_ser_end(cookie);
++	rtnl_unlock();
++	return;
++
++failed:
++	mtk_cpu_profile_note_fault(err);
++	for (i = 0; i < MTK_MAX_DEVS; i++) {
++		if (!eth->netdev[i] || !test_bit(i, &opened))
++			continue;
++		mtk_stop(eth->netdev[i]);
++		netif_carrier_off(eth->netdev[i]);
++	}
++	if (notify && expected > 0)
++		call_netdevice_notifiers(MTK_FE_CPU_PROFILE_ABORT, notify);
++	if (cleanup)
++		mtk_cpu_ser_cleanup_end(cookie);
++	clear_bit(MTK_RESETTING, &eth->state);
++	mtk_cpu_fe_ser_end(cookie);
++	rtnl_unlock();
++}
++#endif
++
+ static void mtk_pending_work(struct work_struct *work)
+ {
+ 	struct mtk_eth *eth = container_of(work, struct mtk_eth, pending_work);
+ 	unsigned long restart = 0;
+ 	int i;
++
++#if IS_ENABLED(CONFIG_MTK_AP_BRIDGE)
++	mtk_cpu_pending_work(eth);
++	return;
++#endif
+ 
+ 	mtk_reset_event_update(eth, MTK_EVENT_TOTAL_CNT);
+ 
+@@ -6802,6 +7083,14 @@
+ 	.set_eee		= mtk_set_eee,
+ };
+ 
++static int mtk_profile_setup_tc(struct net_device *dev, enum tc_setup_type type,
++				void *type_data)
++{
++	if (IS_ENABLED(CONFIG_MTK_AP_BRIDGE))
++		return -EOPNOTSUPP;
++	return mtk_eth_setup_tc(dev, type, type_data);
++}
++
+ static const struct net_device_ops mtk_netdev_ops = {
+ 	.ndo_uninit		= mtk_uninit,
+ 	.ndo_open		= mtk_open,
+@@ -6819,7 +7108,7 @@
+ #ifdef CONFIG_NET_POLL_CONTROLLER
+ 	.ndo_poll_controller	= mtk_poll_controller,
+ #endif
+-	.ndo_setup_tc		= mtk_eth_setup_tc,
++	.ndo_setup_tc		= mtk_profile_setup_tc,
+ 	.ndo_bpf		= mtk_xdp,
+ 	.ndo_xdp_xmit		= mtk_xdp_xmit,
+ 	.ndo_select_queue	= mtk_select_queue,
+@@ -7244,12 +7533,16 @@
+ 	eth->netdev[id]->base_addr = (unsigned long)eth->base;
+ 
+ 	eth->netdev[id]->hw_features = eth->soc->hw_features;
++	if (IS_ENABLED(CONFIG_MTK_AP_BRIDGE))
++		eth->netdev[id]->hw_features &= ~NETIF_F_HW_TC;
+ 	if (eth->hwlro)
+ 		eth->netdev[id]->hw_features |= NETIF_F_LRO;
+ 
+ 	eth->netdev[id]->vlan_features = eth->soc->hw_features &
+ 		~NETIF_F_HW_VLAN_CTAG_TX;
+ 	eth->netdev[id]->features |= eth->soc->hw_features;
++	if (IS_ENABLED(CONFIG_MTK_AP_BRIDGE))
++		eth->netdev[id]->features &= ~NETIF_F_HW_TC;
+ 	eth->netdev[id]->ethtool_ops = &mtk_ethtool_ops;
+ 
+ 	eth->netdev[id]->irq = eth->irq_fe[MTK_FE_IRQ_SHARED];
+@@ -7695,7 +7988,18 @@
+ 	}
+ #endif
+ 
+-	mtk_eth_debugfs_init(eth);
++	if (IS_ENABLED(CONFIG_MTK_AP_BRIDGE)) {
++		/* Keep optional statistics storage, publish no writable debugfs. */
++		eth->debugfs = devm_kzalloc(eth->dev, sizeof(*eth->debugfs), GFP_KERNEL);
++		if (!eth->debugfs) {
++			err = -ENOMEM;
++			mtk_release_all_muxes(eth);
++			mtk_mdio_cleanup(eth);
++			goto err_free_dev;
++		}
++	} else {
++		mtk_eth_debugfs_init(eth);
++	}
+ 
+ 	/* we run 2 devices on the same DMA ring so we need a dummy device
+ 	 * for NAPI to work
+@@ -7779,6 +8083,12 @@
+ 	struct mtk_eth *eth = platform_get_drvdata(pdev);
+ 	struct mtk_mac *mac;
+ 	int i;
++#if IS_ENABLED(CONFIG_MTK_AP_BRIDGE)
++	/* Permanent HNAT restore callback and MMIO ownership cannot be revoked.
++	 * No ordinary product path may remove this builtin physical FE owner.
++	 */
++	mtk_cpu_dma_fatal(MTK_CPU_DMA_CONTROL_RACE, -EBUSY);
++#endif
+ 
+ 	mtk_gso_skb_copy_head = NULL;
+ 	mtk_ip_frag_skb_copy_head = NULL;
+@@ -8113,6 +8423,7 @@
+ 	.remove_new = mtk_remove,
+ 	.driver = {
+ 		.name = "mtk_soc_eth",
++		.suppress_bind_attrs = IS_ENABLED(CONFIG_MTK_AP_BRIDGE),
+ 		.of_match_table = of_mtk_match,
+ 	},
+ };
