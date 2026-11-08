@@ -4,9 +4,11 @@
 
 ## 当前状态
 
-Astra r3.1 **GO，仅批准设计进入隔离分支实施**，见 `roaming-bridge-final-astra-review-r3-1.md`。首轮实现和本地集成验证已完成，实现 HEAD `692a32bd`；尚未通过实际实现独立审查、完整 CI 或硬件/性能验收，未推送、触发 CI、操作路由器或刷机。
+Astra 实际实现审查 **NO-GO**，见 [实现审查报告](roaming-bridge-implementation-astra-review.md)。首轮实现 HEAD `692a32bd` 的本地集成验证完成，但审查找到两个未覆盖的 P1：WO 超时/应答节点所有权、无变更网络 reload 的 AP 事务收尾；正在修复并增加完整路径回归。尚未通过实现复审、完整 CI 或硬件/性能验收，未推送、触发 CI、操作路由器或刷机。r3.1 原设计 GO 继续只作为实现预期。
 
 第一次 Astra 实现审核被平台以“possible cybersecurity risk”过滤中止，未产出技术审查结论。该执行失败不代表代码 GO 或 NO-GO；仍保留审核通过后才推送编译的顺序。重提审核聚焦同一代码范围的路由器转发、资源生命周期、配置和编译正确性，不改变审查标准。
+
+重提审核已完成，除了上述 P1，还发现 `fq_en` 的 BOOLEAN-style setter 返回负 errno 被 ioctl 分派当作成功（P3）。本轮一并改为 FALSE，并通过真实注册项与 ioctl 分派验证调用返回错误；原实现对同一回归失败，修正后通过。
 
 - worktree：`/home/illya/workspace/router/ax6000/worktrees/bridge-forwarding`
 - branch：`fix/ax6000-bridge-forwarding`
@@ -29,7 +31,7 @@ Astra r3.1 **GO，仅批准设计进入隔离分支实施**，见 `roaming-bridg
 3. 普通 AP driver 已实现授权 reader、RX 一次交桥、TX 原 wdev/最终 WCID 绑定、聚合继承及配置互斥；SER/HIF/proxy/实际析构入口已接线。79 项 wire/binding、33 项真实授权检查通过，320 个并发 token 请求仅产生 127 个唯一有效 slot。真实 ARM64 `mt_wifi.ko`、`mtk_warp_proxy.ko` 与 MODPOST 通过，使用真实 conninfra/WARP 符号，不是假导出。
 4. WARP 已实现 value-only checked SER、producer gate、停止与重新准备/启动分离、15 个 busy 位与读回、WO 状态返回、取消和 proof 撤销；冷分配/映射失败按实际暴露边界清理。WO/CCIF 的 HALT、reset、IRQ/tasklet 与 FWDL 错误链已接线。真实 ARM64 `mtk_warp.ko` 与 MODPOST 通过。保留 BIT29 N9 控制中断，同时关闭数据触发器；mapped 拒绝返回 handled，避免 D 回退 native MMIO。173 项实际 proxy/权限测试通过，包括读掩码切换竞态和实际寄存器映射。
 5. netifd 两阶段完整快照、outer ioctl 不确定后的重新阻流、free/replace/member 失败保留与重试、MTK 配置全链和软件 eQoS 已实现。锁定用户态依赖均本地构建；真实 netifd 链接及 8 个 ucode 模块编译通过。20 项控制测试通过，包含真实函数、ucode/datconf、配置失败、释放边界与 eQoS sandbox。
-6. 产品选项仅由实际 AX6000 MTK U-Boot 单设备 defconfig 选择，并排除 mtkhqos_util。历史 ax6000-256m 文件实际选择 netcore_n60/multi-profile，不属本产品，保持原内容。OF_OVERLAY、MODULE_FORCE_UNLOAD 对本 feature 禁用；mode 文件按 feature 打包，CI 检查实际内核配置、rootfs 文件、模块符号并运行真实准备源码上的 helper 测试。禁用运行时 FqEnable 队列替换 CLI，避免与 SER 交叉释放；它不等于 eQoS 软件 HTB/IFB。
+6. 产品选项仅由实际 AX6000 MTK U-Boot 单设备 defconfig 选择，并排除 mtkhqos_util。历史 ax6000-256m 文件实际选择 netcore_n60/multi-profile，不属本产品，保持原内容。OF_OVERLAY、MODULE_FORCE_UNLOAD 对本 feature 禁用；mode 文件按 feature 打包，CI 检查实际内核配置、rootfs 文件、模块符号并运行真实准备源码上的 helper 测试。控制测试中当前 CI 执行 `test_control.py` 的 12 项 C/shell 测试；8 项实际 ucode/plugin 测试另在本地锁定环境运行，不能将该 CI 步骤表述为已包含全部 20 项。禁用运行时 FqEnable 队列替换 CLI，避免与 SER 交叉释放；它不等于 eQoS 软件 HTB/IFB。
 
 正常关闭采用 WO ENABLE→HALT，不能声称固件支持 SER_RESET→HALT。异常 SER 失败后的关闭仍须收到新鲜完成确认，否则不得释放资源，按故障终态处理。目标 WO 只有二进制；相关状态转换和硬件静止语义属于真机验收门。
 
@@ -46,6 +48,6 @@ Astra r3.1 **GO，仅批准设计进入隔离分支实施**，见 `roaming-bridg
 
 ## 下一验收顺序
 
-已完成源码接线、生产补丁生成、本地集成编译和上述 helper 验证。下一步：Astra 实际实现独立审查 → 修复阻断 → 按既有授权推送隔离分支并触发一版 CI。完整固件、硬件 DMA/WO/复位、任意终端漫游、隔离/VLAN/聚合、eQoS 和性能验收仍未完成；宿主适配测试不能证明真实 Linux RCU 调度或目标硅片行为。
+已完成首轮源码接线、生产补丁生成、本地集成编译和上述 helper 验证。下一步：修复本轮两项 P1 和 P3 → 真正消息并发与网络 reload 路径回归 → 重生成/重放受影响生产补丁及增量编译 → Astra 复审 → 通过后推送隔离分支并触发一版 CI。完整固件、硬件 DMA/WO/复位、任意终端漫游、隔离/VLAN/聚合、eQoS 和性能验收仍未完成；宿主适配测试不能证明真实 Linux RCU 调度或目标硅片行为。
 
 不持续轮询 CI，等用户通知编译完成。不自动刷机或发布正式 Release。后续实机验证需先只读确认重启后的状态，不沿用重启前的关联表/FDB；历史证据保留在 `ax6000/research/evidence`。
