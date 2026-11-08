@@ -4,7 +4,9 @@
 
 ## 当前状态
 
-Astra r3.1 **GO，仅批准设计进入隔离分支实施**，见 `roaming-bridge-final-astra-review-r3-1.md`。目前正在实施和本地编译；尚未通过实际实现独立审查、完整 CI 或硬件/性能验收，未推送、触发 CI、操作路由器或刷机。
+Astra r3.1 **GO，仅批准设计进入隔离分支实施**，见 `roaming-bridge-final-astra-review-r3-1.md`。首轮实现和本地集成验证已完成，实现 HEAD `692a32bd`；尚未通过实际实现独立审查、完整 CI 或硬件/性能验收，未推送、触发 CI、操作路由器或刷机。
+
+第一次 Astra 实现审核被平台以“possible cybersecurity risk”过滤中止，未产出技术审查结论。该执行失败不代表代码 GO 或 NO-GO；仍保留审核通过后才推送编译的顺序。重提审核聚焦同一代码范围的路由器转发、资源生命周期、配置和编译正确性，不改变审查标准。
 
 - worktree：`/home/illya/workspace/router/ax6000/worktrees/bridge-forwarding`
 - branch：`fix/ax6000-bridge-forwarding`
