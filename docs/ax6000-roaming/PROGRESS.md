@@ -1,71 +1,49 @@
-# 暂停检查点
+# AX6000 通用桥转发进度
 
-记录时间：2026-11-09 01:06（Asia/Singapore）。
+更新时间：2026-11-09，Asia/Singapore。用户已经明确恢复任务；本文件替代早期暂停记录。
 
-**暂停已由用户随后发送的“可以继续”解除。下文保留暂停时快照；恢复后的当前状态以 README 与主设计为准。**
+## 当前状态
 
-## 恢复后进展
+Astra r3.1 **GO，仅批准设计进入隔离分支实施**，见 `roaming-bridge-final-astra-review-r3-1.md`。目前正在实施和本地编译；尚未通过实际实现独立审查、完整 CI 或硬件/性能验收，未推送、触发 CI、操作路由器或刷机。
 
-### r3 审查之后的当前修订
+- worktree：`/home/illya/workspace/router/ax6000/worktrees/bridge-forwarding`
+- branch：`fix/ax6000-bridge-forwarding`
+- 设计冻结 HEAD：`4a0c52dd7129ac9e90b9374f12c55c01cce8059c`；实现提交从其后开始，最终审查范围以 Git 为准。
+- 生产源码基线：`c196312d3916fad77fa0bb47db57e4b685c15f03`；原 `sources/immortalwrt-mt798x` / `25.12` 作为只读生产 checkout。
+- 实际生产补丁已经生成：内核 `999-zzz-5400..5402`、MTK 7.6.7.3 的 `044-ax6000-universal-ap-bridge.patch`、WARP `100-ax6000-checked-warp-ser.patch`、netifd `900-ax6000-transactional-ap-bridge.patch`。本地 postimage 在忽略目录 `.analysis/{kernel,driver,warp,netifd}-next`；对应 `*-base` 是准确基线。CI 使用包配方中的真实 patch 目录，不依赖 `.analysis`。
 
-- Astra新增 `roaming-bridge-final-astra-review-r3.md`：原P1-1/P1-3/P1-4设计关闭，仅剩WARP STOP错误被吞掉、STOP ACK前释放DMA这一P1。原送审文档快照为Git `0de772dc`，报告保持独立不改。
-- 主稿现在为r3.1，补入 `bridge-r3-warp-stop-contract.md`：值型checked结果；STOP只确认停机、保留ring；成功FE_DONE后再清理/重建，WO/engine返回与首错/deadline真正传播。正常WED/L1 SER保留。
-- 为避免扩大运行态retain与PCI热移除改造，拟选明确终态B：无法确认DMA停止/完成或不可安全串行销毁时，同步进入整机noreturn故障入口尝试HARD复位；不走normal shutdown/panic/kexec，失败可能需断电。相关真实析构入口和proxy退出共享本轮SER准入/fatal guard，补足SMP停机best effort的局限。此新增故障体验已向用户说明，仍待Astra技术放行与后续产品验收。
-- 8个准确fatal/reset选定文件已下载并准备于 `.analysis/linux-6.12.112-fatal-postimage`，仅1个相关MTK WDT patch；有SHA/清单，非完整内核prepare。PSCI/WDT实际复位完成仍是硬件门。
-- P2已并入：早期reader先于rx_pkt_allowed配置读取、完整0/1策略/false传播、native/compat外层ioctl失败视不确定后GET+重新PREPARE、永久callback发布也是寿命承诺、下层reset错误/普通open与内部restart/实际活动participant及ownership补环要求。
-- 仅设计文档修改；未进入固件代码实施、推送、构建或路由器操作。下一步提交r3.1文档快照并新建Astra复审唯一P1及其有限依赖，通过后持续实施。
+## 已确认事实、目标与取舍
 
-### r3 首次送审前的记录
+两轮实验中，平板漫游到 GS7 后 Linux FDB 已正确指向有线上联，MTK 的旧无线关联仍截走回包；旧条目老化后恢复。关闭 k/v/r 仍能复现。旧关联为什么未及时清理尚未确定；已确认的直接转发绕桥行为是本版修复对象。
 
-- 已形成 `roaming-bridge-final-design-r3.md`，入口 `roaming-bridge-final-design.md` 指向该稿。
-- 根据范围担忧，拟采用固定全软件转发，取消所有 PPE/NF-flow cache，保留 WED 基础能力及最小在线 L1 SER；全局 topology epoch/动态 backend/保留 wired BIND 的账户框架不进入本版。已通过可选偏好问题向用户说明性能取舍，尚未收到额外选择；未把无回复当验收或刷机许可。
-- 新增固定 CPU 激活、SER 和范围比较材料；r2 NO-GO 与原四份细化稿保留。范围比较里额外取消在线 FE 恢复的候选未采用。
-- 当前选中的 MTK eQoS 将复用已有软件 tc/HTB/IFB，所有规则走软件；mtkhqos_util 不打包。主稿已列硬件 QoS 损失、classid/默认叶类要求及 UI/CLI 适配，未悄然保留失效服务。
-- 补齐单文件准确 TC postimage：`.analysis/linux-6.12.112-tc-postimage`，14相关补丁全部应用成功，附 PATCHES.json；不是完整内核 prepare/构建。仅源码准备，无功能实现修改。
-- 保留 wired BIND 的 CT 维护研究已收口为未选能力。部分 CT refs 下载成功；conntrack core 源码下载的自动审批两次超时，未获得函数体，不宣称其已核验；这不再阻断固定 CPU 稿。
-- 原生子任务均已完成，文档已静止。下一步提交文档快照并新建 Astra r3 独立设计复审；通过后才实施，再做实际实现审查。
-- 本轮恢复后未操作路由器、推送、编译或刷机；原生产分支仍干净且基线未变。重启后的实机状态仍待需要验证时重新只读核验。
+实现面向所有普通 AP 终端，无固定 MAC/IP/SSID。保留 RX 身份授权与隔离，让 Linux 桥选出口；最终无线 TX 绑定桥选定的原 wdev。r3.1 固定 CPU profile 不保留 PPE BIND、nf_flow 缓存或硬件 HQOS，保留基础 WED 和成功在线 L1 SER，eQoS 使用软件 HTB/IFB。吞吐、CPU、时延代价尚未测量。
 
-## 工作区与版本
+无法证明 DMA 停止/完成，或 SER 与无法可靠拒绝的析构交叉，进入同步 noreturn 故障入口尝试硬复位；可能丢未落盘状态、失败可能需断电。普通配置错误/坏包不因此触发整机复位。该合同已通过设计审查，不等于实机故障体验验收或刷机授权。
 
-- 当前 worktree：`/home/illya/workspace/router/ax6000/worktrees/bridge-forwarding`。
-- 当前分支：`fix/ax6000-bridge-forwarding`。
-- 基线 / 当前 HEAD：`c196312d3916fad77fa0bb47db57e4b685c15f03`。
-- 原生产 checkout：`/home/illya/workspace/router/ax6000/sources/immortalwrt-mt798x`，分支 `25.12`，同一 HEAD；暂停前检查工作区干净。
-- 新 worktree 仅有本目录的未跟踪研究/设计材料，尚未提交；没有固件源码实现变更，也没有本轮推送、编译、刷机或发布。
-- 本目录迁移材料见 `migration-manifest.json`；原 `ax6000/research` 与 `ax6000/sources` 继续作为只读历史、证据和源码基线。
+## 实施分工与已完成验证
 
-## 已确认事实与目标
+1. 内核 bridge/gate/VLAN/skb extension/NF-flow 限制与固定 HNAT CPU 两对象已实现。真实 helper 的 123 项桥门控检查、nf_flow 三入口无副作用拒绝、HNAT 38 个导出 API 安全拒绝及寄存器/首错测试通过。实际 value-state 生命周期和真实 noreturn 故障函数已测试，覆盖中断/抢占先于选举、单一复位执行者、底层复位返回后仍不回到清理路径。
+2. Ethernet 已接入 participant、checked DMA stop、warm reset 错误传播、先 restore 后 restart、可信 descriptor 消费和 TC 硬件拒绝。已完成真实 ARM64 `vmlinux`、模块链接及 `Module.symvers`；真实 FE worker 测试覆盖 STOP 超时、restore/open 失败和禁止假 DONE。
+3. 普通 AP driver 已实现授权 reader、RX 一次交桥、TX 原 wdev/最终 WCID 绑定、聚合继承及配置互斥；SER/HIF/proxy/实际析构入口已接线。79 项 wire/binding、33 项真实授权检查通过，320 个并发 token 请求仅产生 127 个唯一有效 slot。真实 ARM64 `mt_wifi.ko`、`mtk_warp_proxy.ko` 与 MODPOST 通过，使用真实 conninfra/WARP 符号，不是假导出。
+4. WARP 已实现 value-only checked SER、producer gate、停止与重新准备/启动分离、15 个 busy 位与读回、WO 状态返回、取消和 proof 撤销；冷分配/映射失败按实际暴露边界清理。WO/CCIF 的 HALT、reset、IRQ/tasklet 与 FWDL 错误链已接线。真实 ARM64 `mtk_warp.ko` 与 MODPOST 通过。保留 BIT29 N9 控制中断，同时关闭数据触发器；mapped 拒绝返回 handled，避免 D 回退 native MMIO。173 项实际 proxy/权限测试通过，包括读掩码切换竞态和实际寄存器映射。
+5. netifd 两阶段完整快照、outer ioctl 不确定后的重新阻流、free/replace/member 失败保留与重试、MTK 配置全链和软件 eQoS 已实现。锁定用户态依赖均本地构建；真实 netifd 链接及 8 个 ucode 模块编译通过。20 项控制测试通过，包含真实函数、ucode/datconf、配置失败、释放边界与 eQoS sandbox。
+6. 产品选项仅由实际 AX6000 MTK U-Boot 单设备 defconfig 选择，并排除 mtkhqos_util。历史 ax6000-256m 文件实际选择 netcore_n60/multi-profile，不属本产品，保持原内容。OF_OVERLAY、MODULE_FORCE_UNLOAD 对本 feature 禁用；mode 文件按 feature 打包，CI 检查实际内核配置、rootfs 文件、模块符号并运行真实准备源码上的 helper 测试。禁用运行时 FqEnable 队列替换 CLI，避免与 SER 交叉释放；它不等于 eQoS 软件 HTB/IFB。
 
-- 两轮故障中，平板从 AX6000 漫游到 GS7 后，Linux FDB 已指向有线上联，但 MTK 旧关联条目仍将回包直接送往旧无线 STA；旧条目自然老化后恢复。直接转发路径截走回包已证实，旧关联未及时清理的原因尚未确定。
-- 关闭 k/v/r 后仍能复现，不能将现有证据归因于 802.11k/v/r。
-- 用户要求面向所有普通 AP 终端的通用桥转发修复；固定 `.13` / `.32` 或双 MAC 方案已撤回。
-- 目标是保留 RX 身份授权与隔离检查，将桥域普通 AP 数据交给 Linux 桥选择出口；缓存与快速路径不得绕过这一选择。
-- 用户担心改动范围过大：每组改动必须说明根因修复依赖，区分必要合同与独立旧代码加固，形成可独立审查的提交。不新增撤回所有 Linux socket/backlog/qdisc 正常在途数据的目标。
+正常关闭采用 WO ENABLE→HALT，不能声称固件支持 SER_RESET→HALT。异常 SER 失败后的关闭仍须收到新鲜完成确认，否则不得释放资源，按故障终态处理。目标 WO 只有二进制；相关状态转换和硬件静止语义属于真机验收门。
 
-## 设计与审查状态
+## 本地构建材料
 
-- `roaming-bridge-final-design.md` 仍是 r2，尚未合并 r3；`roaming-bridge-final-design-r2-reviewed.md` 是原送审快照。
-- Astra 对 r2 的结论为 **NO-GO**，见 `roaming-bridge-final-astra-review.md`。四个 P1 尚未经过新一轮复审放行。
-- 已完成四份 r3 细化草案：
-  - `bridge-r3-activation-contract.md`：整 BSS 默认阻流、prepare/读回/commit、配置租约与驱动内旧队列边界。
-  - `bridge-r3-ser-contract.md`：持续 RESETTING 状态、跨 RTNL 窗口的恢复时序与确认。
-  - `bridge-r3-hnat-lifecycle.md`：dispatcher、RCU/SRCU、资源生命周期与首版禁止破坏性热退出的边界。
-  - `bridge-r3-packet-ownership.md`：可信 descriptor 来源、硬件副本源头消费、释放责任和能力边界。
-- 三个原生子任务均已完成，仅产生上述设计文档；暂停时没有仍在运行的子任务，没有正在运行的 Astra 委派。
+- `.analysis/linux-full-verified`：从官方 6.12.112 归档按四层 overlay 顺序重新准备，重放全部 1061 个原生产补丁。generic/files-6.12 为空；其余 overlay 分别为 generic 104、mediatek common 128、mediatek 6.12 45 文件。原补丁有 19 个使用 GNU patch 默认允许的 fuzz；不宣称原系列 fuzz=0。核对 87,245 个文件确认旧准备仅漏 common 的 128 个文件，已有内容无差异，已撤回旧 prepare 完整的表述。
+- `.analysis/kernel-compile`：单独完整编译树和真实符号；多个模块共享此树时串行 make，不并发修改配置。该配置是 generic/filogic 与实际包必要选项组合，未执行完整 OpenWrt defconfig，不能等同最终生产配置。
+- `.analysis/toolchain/toolchain-aarch64_cortex-a53_gcc-13.3.0_musl`：已核 SHA 的官方 OpenWrt 工具链，用于本地诊断 ARM64 编译；最终 CI 使用仓库 GCC 14.3，不能将两者等同。
+- `.analysis/host-tools`：本地解包 bison/flex/m4，需 PATH、BISON_PKGDATADIR、M4 指向对应绝对路径；未全局安装。
+- `.analysis/host`、`.analysis/host-src`、`.analysis/host-build`：锁定用户态依赖与真实 native 编译产物。host provenance JSON 记录源码来源和 SHA。
+- `.analysis/production-patch-replay.json`：新内核、D、WARP、netifd 补丁均 fuzz=0 重放，并与对应 postimage 对比。新补丁不包含编译生成的 `.mod.c`。
+- `.analysis/{kernel-final-build,warp-final-build,driver-final-modules-build,bridge-control-final-test}.log` 及各 `*-final-tests.log` 保留本地证据。vendor 编译仍有类型、原型等警告；成功链接不等于所有警告已处理。
+- 既有顶层回归运行 72 项，成功且 1 项跳过：当前隔离 checkout 没有 locked packages feed，无法执行该项真实 Make-call 检查（`tests/test_ax6000_feeds.py`）。本次桥控制的 20 项测试没有跳过。
 
-## 恢复后优先处理的缺口
+## 下一验收顺序
 
-1. 将四份 r3 草案整合为一致的主设计，明确收敛范围；同步修正旧细化报告，避免 r2 旧表述残留。
-2. 硬件 keepalive 副本提前消费后，独立有线 PPE 绑定流的 conntrack 超时维护尚未闭合。现有 helper 的计数维护不足以证明 timeout 维护；不得悄然声称全部加速能力已保留，也不得未经取舍默认关闭全部 PPE。
-3. SER 草案还需明确：生命周期状态转换使用专用受控短事务，不能借会拒绝 RESETTING 的普通 topology begin；最终数据路径 proof 在事务结束后获取。WiFi/FE 的实际 ACK 能力与失败退出须与源码吻合。
-4. 配置租约仅解决本轮配置阻流与驱动内部旧队列，不扩展成撤回所有已进入 Linux 的在途数据。HNAT 热卸载、overlay 等限制须在方案中明确，并验证实际构建配置与入口。
-5. 修订完成后，新建 Astra r3 设计复审。通过后再实施与测试，再做实际实现审查，通过后才推送 CI。当前不具有技术放行结论。
+已完成源码接线、生产补丁生成、本地集成编译和上述 helper 验证。下一步：Astra 实际实现独立审查 → 修复阻断 → 按既有授权推送隔离分支并触发一版 CI。完整固件、硬件 DMA/WO/复位、任意终端漫游、隔离/VLAN/聚合、eQoS 和性能验收仍未完成；宿主适配测试不能证明真实 Linux RCU 调度或目标硅片行为。
 
-## 路由器与后续操作约定
-
-- 最近确认运行的是 Build 19 漫游诊断版；本轮未更改路由器，暂停前没有日志抓取或路由器操作任务。
-- 用户准备自行重启路由器。重启后的关联表、FDB、缓存、运行时设置不能沿用重启前结论；恢复且需要实机验证时，先重新进行只读状态核验。
-- 历史抓包与故障证据已在本地 `ax6000/research/evidence` 保存，重启不影响这些本地材料。
-- 不自动刷机或发布正式 Release。不持续跟踪 CI，保留用户通知编译完成的约定。
-- 用户明确恢复前，只保留此检查点，不主动继续任务；此暂停条件现已解除。
+不持续轮询 CI，等用户通知编译完成。不自动刷机或发布正式 Release。后续实机验证需先只读确认重启后的状态，不沿用重启前的关联表/FDB；历史证据保留在 `ax6000/research/evidence`。

@@ -20,6 +20,15 @@ config KERNEL_BUILD_DOMAIN
 	  returned by 'uname -a' on running systems.
 	  If not set, uses system hostname at build time.
 
+config KERNEL_MTK_AP_BRIDGE
+	bool "AX6000 controlled AP bridge forwarding"
+	depends on TARGET_mediatek_filogic_DEVICE_xiaomi_redmi-router-ax6000-mtkuboot
+	depends on !TARGET_MULTI_PROFILE
+	help
+	  Forward ordinary AP data through the Linux bridge with transactional
+	  port admission. This fixed MT7986 profile disables PPE and flow-table
+	  acceleration, uses software eQoS, and retains basic WED operation.
+
 config KERNEL_PRINTK
 	bool "Enable support for printk"
 	default y
