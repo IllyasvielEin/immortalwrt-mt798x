@@ -1,0 +1,1295 @@
+--- a/include/linux/if_bridge.h
++++ b/include/linux/if_bridge.h
+@@ -12,6 +12,15 @@
+ #include <linux/netdevice.h>
+ #include <uapi/linux/if_bridge.h>
+ #include <linux/bitops.h>
++#include <uapi/linux/mtk_ap_bridge.h>
++
++int br_mtk_ap_check_rtnl(const struct net_device *port,
++			 const struct net_device *bridge,
++			 const struct mtk_ap_bridge_domain *expected);
++bool br_mtk_ap_check_rcu(const struct net_device *port,
++			const struct net_device *bridge,
++			const struct mtk_ap_bridge_domain *expected,
++			u16 vid);
+ 
+ struct br_ip {
+ 	union {
+--- a/include/linux/if_vlan.h
++++ b/include/linux/if_vlan.h
+@@ -139,6 +139,10 @@
+ 			 int (*action)(struct net_device *dev, int vid,
+ 				       void *arg), void *arg);
+ extern struct net_device *vlan_dev_real_dev(const struct net_device *dev);
++/* Unlike vlan_dev_real_dev(), preserves each immediate VLAN parent. */
++extern struct net_device *vlan_dev_direct_real_dev(const struct net_device *dev);
++extern struct net_device *vlan_find_dev_rcu(struct net_device *dev,
++					 __be16 proto, u16 vid);
+ extern u16 vlan_dev_vlan_id(const struct net_device *dev);
+ extern __be16 vlan_dev_vlan_proto(const struct net_device *dev);
+ 
+--- /dev/null
++++ b/include/linux/mtk_ap_bridge.h
+@@ -0,0 +1,88 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++#ifndef _LINUX_MTK_AP_BRIDGE_H
++#define _LINUX_MTK_AP_BRIDGE_H
++#include <linux/types.h>
++#include <uapi/linux/mtk_ap_bridge.h>
++
++struct net_device;
++struct sk_buff;
++struct mtk_ap_bridge_gate;
++/* Stack token: enter/exit encompass configuration reads and packet action.
++ * No RTNL or sleep is allowed while holding a reader. PREPARE may sleep.
++ */
++struct mtk_ap_bridge_reader {
++	struct mtk_ap_bridge_gate *gate;
++	u64 owner;
++	u64 lease;
++};
++struct mtk_ap_bridge_skb_ext {
++	u64 rx_owner, rx_lease;
++	u64 tx_owner, tx_lease;
++	u16 tx_domain, tx_vid;
++	u32 tx_flags;
++};
++struct mtk_ap_bridge_info {
++	struct net_device *port; /* borrowed, only within caller's RCU section */
++	struct net_device *bridge;
++	u32 policy;
++	bool bridged;
++};
++struct mtk_ap_bridge_policy {
++	u32 flags; /* MTK_AP_BRIDGE_NO_FORWARDING[_BTNBSSID] */
++	bool driver_ready;
++	bool supported_role;
++};
++/* create returns ERR_PTR on failure, pins dev, permanently sets netns_local; destroy requires all driver
++ * entry points/queues stopped, waits for admitted readers and RCU queries.
++ */
++struct mtk_ap_bridge_gate *mtk_ap_bridge_create(struct net_device *dev);
++void mtk_ap_bridge_destroy(struct mtk_ap_bridge_gate *gate);
++/* RTNL held. direct ndo_siocdevprivate callback passes original user data. */
++int mtk_ap_bridge_ioctl(struct mtk_ap_bridge_gate *gate, void __user *data,
++		       const struct mtk_ap_bridge_policy *policy);
++/* Synchronous revoke (process context, may sleep), also used before teardown.
++ * It does not require RTNL; caller serializes driver config writers.
++ */
++void mtk_ap_bridge_block(struct mtk_ap_bridge_gate *gate);
++/* Caller first publishes profile !ready and keeps it so until return.
++ * Drains admitted CPU readers without revoking configuration/queue leases. */
++void mtk_ap_bridge_profile_drain(struct mtk_ap_bridge_gate *gate);
++bool mtk_ap_bridge_is_blocked(const struct mtk_ap_bridge_gate *gate);
++/* Configuration writers require a locally revoked gate; a temporary SER
++ * profile pause does not revoke the committed configuration/lease. */
++bool mtk_ap_bridge_config_blocked(const struct mtk_ap_bridge_gate *gate);
++bool mtk_ap_bridge_enter(struct mtk_ap_bridge_gate *gate,
++			 struct mtk_ap_bridge_reader *reader);
++void mtk_ap_bridge_exit(struct mtk_ap_bridge_reader *reader);
++/* Existing nonzero stamp must match; never renews queued packet leases.
++ * rx=true is authenticated RX, false is TX. GFP_ATOMIC COW, false on OOM.
++ */
++bool mtk_ap_bridge_stamp(struct sk_buff *skb,
++			 const struct mtk_ap_bridge_reader *reader, bool rx);
++bool mtk_ap_bridge_validate(const struct sk_buff *skb,
++			    const struct mtk_ap_bridge_reader *reader, bool rx);
++bool mtk_ap_bridge_inherit(struct sk_buff *to, const struct sk_buff *from);
++/* TX admission on the original Ethernet frame, BEFORE any VLAN rewrite.
++ * Includes TX lease stamp; a previously stamped packet needs a valid saved
++ * domain and is never assigned a new one. Native 802.11 conversions inherit.
++ */
++bool mtk_ap_bridge_tx_domain_stamp(struct sk_buff *skb,
++				const struct mtk_ap_bridge_reader *reader);
++bool mtk_ap_bridge_tx_domain_validate(const struct sk_buff *skb,
++				   const struct mtk_ap_bridge_reader *reader);
++/* RCU held by caller, no sleeping. Resolve ingress base skb tags or actual
++ * VLAN port. Returns 0 on committed intent match, negative means drop.
++ * info->bridged false is the only permission to retain standalone behavior.
++ */
++int mtk_ap_bridge_resolve_rcu(struct mtk_ap_bridge_gate *gate,
++			     const struct net_device *actual,
++			     const struct sk_buff *skb,
++			     struct mtk_ap_bridge_info *info);
++/* RCU held. Zero = not a domain of this gate; positive = matched and valid;
++ * negative = belongs to gate but blocked/stale. Used by driver NF hooks.
++ */
++int mtk_ap_bridge_match_rcu(struct mtk_ap_bridge_gate *gate,
++			   const struct net_device *actual,
++			   const struct sk_buff *skb,
++			   struct mtk_ap_bridge_info *info);
++#endif
+--- a/include/linux/skbuff.h
++++ b/include/linux/skbuff.h
+@@ -4867,6 +4867,9 @@
+ #if IS_ENABLED(CONFIG_MCTP_FLOWS)
+ 	SKB_EXT_MCTP,
+ #endif
++#if IS_ENABLED(CONFIG_MTK_AP_BRIDGE)
++	SKB_EXT_MTK_BSS,
++#endif
+ 	SKB_EXT_NUM, /* must be last */
+ };
+ 
+--- /dev/null
++++ b/include/uapi/linux/mtk_ap_bridge.h
+@@ -0,0 +1,79 @@
++/* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
++#ifndef _UAPI_LINUX_MTK_AP_BRIDGE_H
++#define _UAPI_LINUX_MTK_AP_BRIDGE_H
++#include <linux/types.h>
++
++#define MTK_AP_BRIDGE_ABI 1
++#define MTK_AP_BRIDGE_IOCTL 0x89ff /* SIOCDEVPRIVATE + 15 */
++#define MTK_AP_BRIDGE_MAX_DOMAINS 32
++#define MTK_AP_BRIDGE_MAX_TAGS 2
++#define MTK_AP_BRIDGE_VLAN_BYTES 512
++
++enum mtk_ap_bridge_op {
++	MTK_AP_BRIDGE_GET = 0,
++	MTK_AP_BRIDGE_PREPARE = 1,
++	MTK_AP_BRIDGE_STAGE_DOMAIN = 2,
++	MTK_AP_BRIDGE_COMMIT = 3,
++	MTK_AP_BRIDGE_ABORT = 4,
++};
++enum mtk_ap_bridge_state {
++	MTK_AP_BRIDGE_BLOCKED = 0,
++	MTK_AP_BRIDGE_READY = 1,
++	MTK_AP_BRIDGE_DEAD = 2,
++};
++#define MTK_AP_BRIDGE_NO_FORWARDING (1U << 0)
++#define MTK_AP_BRIDGE_NO_FORWARDING_BTNBSSID (1U << 1)
++#define MTK_AP_BRIDGE_POLICY_MASK 3U
++/* Stable bridge policy bits checked in both true and false directions. */
++#define MTK_AP_BRIDGE_PORT_FLAGS ((1ULL << 0) | (1ULL << 5) | (1ULL << 6) | \
++	(1ULL << 8) | (1ULL << 10) | (1ULL << 11) | (1ULL << 12) | \
++	(1ULL << 13) | (1ULL << 14) | (1ULL << 15) | (1ULL << 16) | \
++	(1ULL << 21) | (1ULL << 22) | (1ULL << 23) | (1ULL << 24))
++/* All integers use native byte order, including VLAN protocols (ETH_P_*).
++ * Bit n in each bitmap describes VID n, low bit first. VID 0 is forbidden.
++ * Entry zero must describe the base netdev (depth zero). Every VLAN child
++ * must have exactly one entry; tag[] describes direct parents, outer first.
++ */
++struct mtk_ap_bridge_tag {
++	__u32 ifindex;
++	__u16 proto;
++	__u16 vid;
++};
++struct mtk_ap_bridge_domain {
++	__u32 port_ifindex;
++	__u32 bridge_ifindex; /* zero explicitly requests standalone */
++	__aligned_u64 port_flags;
++	__u32 policy;
++	__u16 depth;
++	__u16 bridge_vlan_proto;
++	__u16 pvid;
++	__u16 bridge_pvid;
++	__u8 vlan_filtering;
++	__u8 reserved0[3];
++	struct mtk_ap_bridge_tag tag[MTK_AP_BRIDGE_MAX_TAGS];
++	__u8 vlans[MTK_AP_BRIDGE_VLAN_BYTES];
++	__u8 untagged[MTK_AP_BRIDGE_VLAN_BYTES];
++	__u8 bridge_vlans[MTK_AP_BRIDGE_VLAN_BYTES];
++	__u8 bridge_untagged[MTK_AP_BRIDGE_VLAN_BYTES];
++	__u32 reserved[4];
++};
++struct mtk_ap_bridge_request {
++	__u16 abi;
++	__u16 size;
++	__u32 op;
++	__u32 ifindex;
++	__u32 domain_index;
++	__aligned_u64 owner;
++	__aligned_u64 transaction;
++	__aligned_u64 lease;
++	__u32 domain_count;
++	__u32 state;
++	__s32 error;
++	__u8 driver_ready;
++	__u8 profile_ready;
++	__u8 blocked;
++	__u8 reserved0;
++	__u32 reserved[4];
++	struct mtk_ap_bridge_domain domain;
++};
++#endif
+--- a/net/8021q/vlan.c
++++ b/net/8021q/vlan.c
+@@ -155,6 +155,13 @@
+ 	struct vlan_group *grp;
+ 	int err;
+ 
++	/* An AP's namespace identity cannot be weakened by a VLAN descendant. */
++	if (real_dev->netns_local) {
++		if (!net_eq(dev_net(dev), dev_net(real_dev)))
++			return -EXDEV;
++		dev->netns_local = true;
++	}
++
+ 	err = vlan_vid_add(real_dev, vlan->vlan_proto, vlan_id);
+ 	if (err)
+ 		return err;
+--- a/net/8021q/vlan_core.c
++++ b/net/8021q/vlan_core.c
+@@ -98,6 +98,20 @@
+ 	return NULL;
+ }
+ EXPORT_SYMBOL(__vlan_find_dev_deep_rcu);
++
++struct net_device *vlan_dev_direct_real_dev(const struct net_device *dev)
++{
++	return vlan_dev_priv(dev)->real_dev;
++}
++EXPORT_SYMBOL(vlan_dev_direct_real_dev);
++
++struct net_device *vlan_find_dev_rcu(struct net_device *dev, __be16 proto, u16 vid)
++{
++	struct vlan_info *info = rcu_dereference(dev->vlan_info);
++
++	return info ? vlan_group_get_device(&info->grp, proto, vid) : NULL;
++}
++EXPORT_SYMBOL(vlan_find_dev_rcu);
+ 
+ struct net_device *vlan_dev_real_dev(const struct net_device *dev)
+ {
+--- a/net/Kconfig
++++ b/net/Kconfig
+@@ -71,6 +71,17 @@
+ 
+ config SKB_EXTENSIONS
+ 	bool
++
++config MTK_AP_BRIDGE
++	bool "MediaTek controlled AP bridge forwarding"
++	depends on ARM64 && NET_MEDIATEK_SOC && BRIDGE
++	depends on MEDIATEK_NETSYS_V2 && !MEDIATEK_NETSYS_V3
++	select SKB_EXTENSIONS
++	select VLAN_8021Q
++	select BRIDGE_VLAN_FILTERING
++	help
++	  Fixed CPU forwarding and transactional AP bridge admission. This
++	  product profile deliberately disables all nf_flow_table caching.
+ 
+ config NET_DEVMEM
+ 	def_bool y
+--- a/net/bridge/br_if.c
++++ b/net/bridge/br_if.c
+@@ -779,3 +779,106 @@
+ 	return p->flags & flag;
+ }
+ EXPORT_SYMBOL_GPL(br_port_flag_is_set);
++
++#ifdef CONFIG_MTK_AP_BRIDGE
++/* All pointer traversal stays in bridge code; proprietary AP modules receive
++ * only values/errno, never private net_bridge_port pointers. */
++static bool br_mtk_ap_vid(const u8 *map, u16 vid)
++{
++	return map[vid >> 3] & BIT(vid & 7);
++}
++
++static bool br_mtk_ap_vlans(const struct net_bridge_vlan_group *vg,
++			    const u8 *members, const u8 *untagged, u16 pvid)
++{
++	struct net_bridge_vlan *v;
++	unsigned int count = 0, expected_count = 0, i;
++
++	if (br_get_pvid(vg) != pvid)
++		return false;
++	for (i = 0; i < MTK_AP_BRIDGE_VLAN_BYTES; i++)
++		expected_count += hweight8(members[i]);
++	if (!vg)
++		return !expected_count;
++	list_for_each_entry(v, &vg->vlan_list, vlist) {
++		if (!br_vlan_should_use(v))
++			continue;
++		if (!br_mtk_ap_vid(members, v->vid) ||
++		    br_mtk_ap_vid(untagged, v->vid) !=
++		    !!(v->flags & BRIDGE_VLAN_INFO_UNTAGGED))
++			return false;
++		count++;
++	}
++	return count == expected_count;
++}
++
++int br_mtk_ap_check_rtnl(const struct net_device *port,
++			 const struct net_device *bridge,
++			 const struct mtk_ap_bridge_domain *e)
++{
++	struct net_bridge_port *p;
++
++	ASSERT_RTNL();
++	p = br_port_get_rtnl(port);
++	if (!p || p->br->dev != bridge ||
++	    (p->flags & MTK_AP_BRIDGE_PORT_FLAGS) != e->port_flags)
++		return -EAGAIN;
++#ifdef CONFIG_BRIDGE_VLAN_FILTERING
++	if (br_opt_get(p->br, BROPT_VLAN_ENABLED) != !!e->vlan_filtering ||
++	    ntohs(p->br->vlan_proto) != e->bridge_vlan_proto ||
++	    !br_mtk_ap_vlans(nbp_vlan_group(p), e->vlans,
++			     e->untagged, e->pvid) ||
++	    !br_mtk_ap_vlans(br_vlan_group(p->br), e->bridge_vlans,
++			     e->bridge_untagged, e->bridge_pvid))
++		return -EAGAIN;
++#else
++	if (e->vlan_filtering || e->pvid || e->bridge_pvid)
++		return -EOPNOTSUPP;
++#endif
++	return 0;
++}
++EXPORT_SYMBOL(br_mtk_ap_check_rtnl);
++
++static bool br_mtk_ap_one_vid(struct net_bridge_vlan_group *vg,
++			      const u8 *members, const u8 *untagged, u16 vid)
++{
++	struct net_bridge_vlan *v = vg ? br_vlan_find(vg, vid) : NULL;
++	bool present = v && br_vlan_should_use(v);
++
++	return present == br_mtk_ap_vid(members, vid) &&
++	       (!present || !!(v->flags & BRIDGE_VLAN_INFO_UNTAGGED) ==
++			    br_mtk_ap_vid(untagged, vid));
++}
++
++bool br_mtk_ap_check_rcu(const struct net_device *port,
++			const struct net_device *bridge,
++			const struct mtk_ap_bridge_domain *e, u16 vid)
++{
++	struct net_bridge_port *p = br_port_get_check_rcu(port);
++
++	RCU_LOCKDEP_WARN(!rcu_read_lock_held(), "AP bridge check without RCU");
++	if (!p || p->br->dev != bridge ||
++	    (READ_ONCE(p->flags) & MTK_AP_BRIDGE_PORT_FLAGS) != e->port_flags)
++		return false;
++#ifdef CONFIG_BRIDGE_VLAN_FILTERING
++	if (br_opt_get(p->br, BROPT_VLAN_ENABLED) != !!e->vlan_filtering ||
++	    ntohs(READ_ONCE(p->br->vlan_proto)) != e->bridge_vlan_proto)
++		return false;
++	if (e->vlan_filtering) {
++		struct net_bridge_vlan_group *vg = nbp_vlan_group_rcu(p);
++
++		if (br_get_pvid(vg) != e->pvid)
++			return false;
++		if (!vid)
++			vid = e->pvid;
++		if (!vid || !br_mtk_ap_vid(e->vlans, vid) ||
++		    !br_mtk_ap_one_vid(vg, e->vlans, e->untagged, vid) ||
++		    !br_mtk_ap_one_vid(br_vlan_group_rcu(p->br), e->bridge_vlans,
++				   e->bridge_untagged, vid))
++			return false;
++	}
++#endif
++	return true;
++}
++EXPORT_SYMBOL(br_mtk_ap_check_rcu);
++#endif
+--- a/net/core/Makefile
++++ b/net/core/Makefile
+@@ -46,3 +46,5 @@
+ obj-$(CONFIG_OF)	+= of_net.o
+ obj-$(CONFIG_NET_TEST) += net_test.o
+ obj-$(CONFIG_NET_DEVMEM) += devmem.o
++
++obj-$(CONFIG_MTK_AP_BRIDGE) += mtk_ap_bridge.o
+--- /dev/null
++++ b/net/core/mtk_ap_bridge.c
+@@ -0,0 +1,824 @@
++// SPDX-License-Identifier: GPL-2.0
++/* Transactional ordinary-AP admission. No FDB/STA cache or global topology. */
++#include <linux/atomic.h>
++#include <linux/capability.h>
++#include <linux/err.h>
++#include <linux/etherdevice.h>
++#include <linux/if_bridge.h>
++#include <linux/if_vlan.h>
++#include <linux/mtk_ap_bridge.h>
++#include <linux/mtk_cpu_profile.h>
++#include <linux/netdevice.h>
++#include <linux/rcupdate.h>
++#include <linux/rtnetlink.h>
++#include <linux/skbuff.h>
++#include <linux/slab.h>
++#include <linux/spinlock.h>
++#include <linux/uaccess.h>
++#include <linux/wait.h>
++#include <net/net_namespace.h>
++
++struct mtk_ap_domain {
++	struct mtk_ap_bridge_domain expected;
++	struct net_device *port, *bridge;
++	struct net_device *tag[MTK_AP_BRIDGE_MAX_TAGS];
++};
++struct mtk_ap_snapshot {
++	struct rcu_head rcu;
++	u32 count;
++	struct mtk_ap_domain *domain[MTK_AP_BRIDGE_MAX_DOMAINS];
++};
++struct mtk_ap_bridge_gate {
++	struct net_device *dev;
++	struct net *net;
++	spinlock_t lock;
++	wait_queue_head_t drain;
++	atomic_t readers;
++	u64 owner, transaction, lease;
++	bool open, dead;
++	int error;
++	struct mtk_ap_snapshot *pending; /* RTNL */
++	struct mtk_ap_snapshot __rcu *committed;
++};
++static atomic64_t mtk_ap_cookies = ATOMIC64_INIT(0);
++
++/* Refuse exhaustion instead of reusing an owner/transaction/queue lease. */
++static u64 mtk_ap_cookie(void)
++{
++	s64 old, next;
++
++	do {
++		old = atomic64_read(&mtk_ap_cookies);
++		if (old == S64_MAX)
++			return 0;
++		next = old + 1;
++	} while (atomic64_cmpxchg(&mtk_ap_cookies, old, next) != old);
++	return next;
++}
++
++static bool mtk_ap_profile_ready(void)
++{
++	return mtk_cpu_profile_ready() && !mtk_cpu_profile_is_fatal();
++}
++
++static void mtk_ap_domain_free(struct mtk_ap_domain *d)
++{
++	unsigned int i;
++
++	if (!d)
++		return;
++	if (d->port)
++		dev_put(d->port);
++	if (d->bridge)
++		dev_put(d->bridge);
++	for (i = 0; i < MTK_AP_BRIDGE_MAX_TAGS; i++)
++		if (d->tag[i])
++			dev_put(d->tag[i]);
++	kfree(d);
++}
++
++static void mtk_ap_snapshot_free(struct mtk_ap_snapshot *s)
++{
++	unsigned int i;
++
++	if (!s)
++		return;
++	for (i = 0; i < s->count; i++)
++		mtk_ap_domain_free(s->domain[i]);
++	kfree(s);
++}
++
++static void mtk_ap_snapshot_rcu_free(struct rcu_head *rcu)
++{
++	mtk_ap_snapshot_free(container_of(rcu, struct mtk_ap_snapshot, rcu));
++}
++
++struct mtk_ap_bridge_gate *mtk_ap_bridge_create(struct net_device *dev)
++{
++	struct mtk_ap_bridge_gate *g;
++
++	g = kzalloc(sizeof(*g), GFP_KERNEL);
++	if (!g)
++		return ERR_PTR(-ENOMEM);
++	g->owner = mtk_ap_cookie();
++	if (!g->owner) {
++		kfree(g);
++		return ERR_PTR(-EOVERFLOW);
++	}
++	dev_hold(dev);
++	g->dev = dev;
++	g->net = get_net(dev_net(dev));
++	dev->netns_local = true; /* Lifetime invariant, never undone. */
++	spin_lock_init(&g->lock);
++	init_waitqueue_head(&g->drain);
++	atomic_set(&g->readers, 0);
++	return g;
++}
++EXPORT_SYMBOL(mtk_ap_bridge_create);
++
++void mtk_ap_bridge_block(struct mtk_ap_bridge_gate *g)
++{
++	unsigned long flags;
++
++	if (IS_ERR_OR_NULL(g))
++		return;
++	spin_lock_irqsave(&g->lock, flags);
++	g->open = false;
++	g->transaction = 0; /* A late old COMMIT cannot reopen an external close. */
++	spin_unlock_irqrestore(&g->lock, flags);
++	/* Readers never take RTNL or sleep, and cannot enter after close. */
++	wait_event(g->drain, !atomic_read(&g->readers));
++}
++EXPORT_SYMBOL(mtk_ap_bridge_block);
++
++void mtk_ap_bridge_profile_drain(struct mtk_ap_bridge_gate *g)
++{
++	unsigned long flags;
++
++	if (IS_ERR_OR_NULL(g))
++		return;
++	/* Pair with enter's lock: a reader which observed the pre-fault profile
++	 * is now counted. The profile owner prevents re-enable until we return.
++	 */
++	spin_lock_irqsave(&g->lock, flags);
++	WARN_ON_ONCE(mtk_ap_profile_ready());
++	spin_unlock_irqrestore(&g->lock, flags);
++	wait_event(g->drain, !atomic_read(&g->readers));
++}
++EXPORT_SYMBOL(mtk_ap_bridge_profile_drain);
++
++bool mtk_ap_bridge_config_blocked(const struct mtk_ap_bridge_gate *g)
++{
++	return IS_ERR_OR_NULL(g) || !smp_load_acquire(&g->open) || READ_ONCE(g->dead);
++}
++EXPORT_SYMBOL(mtk_ap_bridge_config_blocked);
++
++bool mtk_ap_bridge_is_blocked(const struct mtk_ap_bridge_gate *g)
++{
++	return mtk_ap_bridge_config_blocked(g) || !mtk_ap_profile_ready();
++}
++EXPORT_SYMBOL(mtk_ap_bridge_is_blocked);
++
++void mtk_ap_bridge_destroy(struct mtk_ap_bridge_gate *g)
++{
++	struct mtk_ap_snapshot *s;
++	unsigned long flags;
++
++	if (IS_ERR_OR_NULL(g))
++		return;
++	spin_lock_irqsave(&g->lock, flags);
++	g->dead = true;
++	g->open = false;
++	spin_unlock_irqrestore(&g->lock, flags);
++	wait_event(g->drain, !atomic_read(&g->readers));
++	s = rcu_replace_pointer(g->committed, NULL, true);
++	synchronize_rcu();
++	mtk_ap_snapshot_free(s);
++	mtk_ap_snapshot_free(g->pending);
++	put_net(g->net);
++	dev_put(g->dev);
++	kfree(g);
++}
++EXPORT_SYMBOL(mtk_ap_bridge_destroy);
++
++bool mtk_ap_bridge_enter(struct mtk_ap_bridge_gate *g,
++			 struct mtk_ap_bridge_reader *r)
++{
++	unsigned long flags;
++	bool ok = false;
++
++	memset(r, 0, sizeof(*r));
++	if (IS_ERR_OR_NULL(g))
++		return false;
++	spin_lock_irqsave(&g->lock, flags);
++	if (g->open && !g->dead && mtk_ap_profile_ready()) {
++		atomic_inc(&g->readers);
++		r->gate = g;
++		r->owner = g->owner;
++		r->lease = g->lease;
++		ok = true;
++	}
++	spin_unlock_irqrestore(&g->lock, flags);
++	return ok;
++}
++EXPORT_SYMBOL(mtk_ap_bridge_enter);
++
++void mtk_ap_bridge_exit(struct mtk_ap_bridge_reader *r)
++{
++	struct mtk_ap_bridge_gate *g = r->gate;
++
++	if (!g)
++		return;
++	r->gate = NULL;
++	if (atomic_dec_and_test(&g->readers))
++		wake_up(&g->drain);
++}
++EXPORT_SYMBOL(mtk_ap_bridge_exit);
++
++bool mtk_ap_bridge_validate(const struct sk_buff *skb,
++			    const struct mtk_ap_bridge_reader *r, bool rx)
++{
++	const struct mtk_ap_bridge_skb_ext *e;
++
++	if (!r->gate)
++		return false;
++	e = skb_ext_find(skb, SKB_EXT_MTK_BSS);
++	return e && (rx ? e->rx_owner == r->owner && e->rx_lease == r->lease :
++			 e->tx_owner == r->owner && e->tx_lease == r->lease);
++}
++EXPORT_SYMBOL(mtk_ap_bridge_validate);
++
++bool mtk_ap_bridge_stamp(struct sk_buff *skb,
++			 const struct mtk_ap_bridge_reader *r, bool rx)
++{
++	struct mtk_ap_bridge_skb_ext *e;
++	bool existed;
++	u64 owner, lease;
++
++	if (!r->gate)
++		return false;
++	e = skb_ext_find(skb, SKB_EXT_MTK_BSS);
++	if (e) {
++		owner = rx ? e->rx_owner : e->tx_owner;
++		lease = rx ? e->rx_lease : e->tx_lease;
++		if (owner || lease)
++			return mtk_ap_bridge_validate(skb, r, rx);
++	}
++	existed = !!e;
++	e = skb_ext_add(skb, SKB_EXT_MTK_BSS); /* makes shared ext writable */
++	if (!e)
++		return false;
++	if (!existed)
++		memset(e, 0, sizeof(*e));
++	if (rx) {
++		e->rx_owner = r->owner;
++		e->rx_lease = r->lease;
++	} else {
++		e->tx_owner = r->owner;
++		e->tx_lease = r->lease;
++	}
++	return true;
++}
++EXPORT_SYMBOL(mtk_ap_bridge_stamp);
++
++bool mtk_ap_bridge_inherit(struct sk_buff *to, const struct sk_buff *from)
++{
++	const struct mtk_ap_bridge_skb_ext *src;
++	struct mtk_ap_bridge_skb_ext saved, *dst;
++
++	src = skb_ext_find(from, SKB_EXT_MTK_BSS);
++	if (!src)
++		return !skb_ext_find(to, SKB_EXT_MTK_BSS);
++	saved = *src; /* to/from may share an extension; COW may release it. */
++	dst = skb_ext_find(to, SKB_EXT_MTK_BSS);
++	if (dst)
++		return !memcmp(dst, &saved, sizeof(saved));
++	dst = skb_ext_add(to, SKB_EXT_MTK_BSS);
++	if (!dst)
++		return false;
++	*dst = saved;
++	return true;
++}
++EXPORT_SYMBOL(mtk_ap_bridge_inherit);
++
++static bool mtk_ap_map_valid(const u8 *members, const u8 *untagged, u16 pvid)
++{
++	unsigned int i;
++
++	if ((members[0] & 1) || (members[511] & 0x80) || pvid >= VLAN_VID_MASK)
++		return false;
++	if (pvid && !(members[pvid >> 3] & BIT(pvid & 7)))
++		return false;
++	for (i = 0; i < MTK_AP_BRIDGE_VLAN_BYTES; i++)
++		if (untagged[i] & ~members[i])
++			return false;
++	return true;
++}
++
++static int mtk_ap_domain_structure(const struct mtk_ap_bridge_domain *e)
++{
++	unsigned int i;
++
++	if (!e->port_ifindex || e->depth > MTK_AP_BRIDGE_MAX_TAGS ||
++	    e->vlan_filtering > 1 || e->policy & ~MTK_AP_BRIDGE_POLICY_MASK ||
++	    e->port_flags & ~MTK_AP_BRIDGE_PORT_FLAGS ||
++	    memchr_inv(e->reserved0, 0, sizeof(e->reserved0)) ||
++	    memchr_inv(e->reserved, 0, sizeof(e->reserved)) ||
++	    !mtk_ap_map_valid(e->vlans, e->untagged, e->pvid) ||
++	    !mtk_ap_map_valid(e->bridge_vlans, e->bridge_untagged, e->bridge_pvid))
++		return -EINVAL;
++	for (i = 0; i < MTK_AP_BRIDGE_MAX_TAGS; i++) {
++		if (i >= e->depth) {
++			if (e->tag[i].ifindex || e->tag[i].proto || e->tag[i].vid)
++				return -EINVAL;
++		} else if (!e->tag[i].ifindex || !e->tag[i].vid ||
++			   e->tag[i].vid >= VLAN_VID_MASK ||
++			   (e->tag[i].proto != ETH_P_8021Q &&
++			    e->tag[i].proto != ETH_P_8021AD)) {
++			return -EINVAL;
++		}
++	}
++	if (e->bridge_ifindex) {
++		if (e->bridge_vlan_proto != ETH_P_8021Q &&
++		    e->bridge_vlan_proto != ETH_P_8021AD)
++			return -EINVAL;
++	} else if (e->port_flags || e->vlan_filtering || e->bridge_vlan_proto ||
++		   e->pvid || e->bridge_pvid ||
++		   memchr_inv(e->vlans, 0, sizeof(e->vlans)) ||
++		   memchr_inv(e->bridge_vlans, 0, sizeof(e->bridge_vlans))) {
++		return -EINVAL;
++	}
++	return 0;
++}
++
++static struct mtk_ap_domain *mtk_ap_stage(struct mtk_ap_bridge_gate *g,
++					 const struct mtk_ap_bridge_domain *e)
++{
++	struct mtk_ap_domain *d;
++	unsigned int i;
++
++	d = kzalloc(sizeof(*d), GFP_KERNEL);
++	if (!d)
++		return ERR_PTR(-ENOMEM);
++	d->expected = *e;
++	d->port = dev_get_by_index(g->net, e->port_ifindex);
++	if (!d->port)
++		goto stale;
++	if (e->bridge_ifindex) {
++		d->bridge = dev_get_by_index(g->net, e->bridge_ifindex);
++		if (!d->bridge)
++			goto stale;
++	}
++	for (i = 0; i < e->depth; i++) {
++		d->tag[i] = dev_get_by_index(g->net, e->tag[i].ifindex);
++		if (!d->tag[i])
++			goto stale;
++	}
++	return d;
++stale:
++	mtk_ap_domain_free(d);
++	return ERR_PTR(-ENODEV);
++}
++
++static bool mtk_ap_dev_valid(const struct mtk_ap_bridge_gate *g,
++			      const struct net_device *dev)
++{
++	return dev && READ_ONCE(dev->reg_state) == NETREG_REGISTERED &&
++	       net_eq(dev_net(dev), g->net) && netif_running(dev);
++}
++
++static bool mtk_ap_domain_chain(const struct mtk_ap_bridge_gate *g,
++				const struct mtk_ap_domain *d)
++{
++	const struct net_device *parent = g->dev;
++	unsigned int i;
++
++	if (!mtk_ap_dev_valid(g, g->dev) || !mtk_ap_dev_valid(g, d->port))
++		return false;
++	for (i = 0; i < d->expected.depth; i++) {
++		const struct net_device *v = d->tag[i];
++
++		if (!mtk_ap_dev_valid(g, v) || !v->netns_local || !is_vlan_dev(v) ||
++		    vlan_dev_direct_real_dev(v) != parent ||
++		    ntohs(vlan_dev_vlan_proto(v)) != d->expected.tag[i].proto ||
++		    vlan_dev_vlan_id(v) != d->expected.tag[i].vid)
++			return false;
++		parent = v;
++	}
++	return parent == d->port;
++}
++
++static int mtk_ap_check_snapshot(struct mtk_ap_bridge_gate *g,
++				struct mtk_ap_snapshot *s, u32 policy)
++{
++	struct net_device *dev;
++	unsigned int i, j, descendants = 0;
++	int ret;
++
++	ASSERT_RTNL();
++	if (!s || !s->count || !s->domain[0] ||
++	    s->domain[0]->expected.depth || s->domain[0]->port != g->dev)
++		return -EINVAL;
++	for (i = 0; i < s->count; i++) {
++		struct mtk_ap_domain *d = s->domain[i];
++
++		if (!d || !mtk_ap_domain_chain(g, d) || d->expected.policy != policy)
++			return -EAGAIN;
++		for (j = 0; j < i; j++)
++			if (s->domain[j]->port == d->port)
++				return -EINVAL;
++		if (!d->bridge) {
++			if (netdev_master_upper_dev_get(d->port) ||
++			    rtnl_dereference(d->port->rx_handler))
++				return -EAGAIN;
++		} else {
++			if (!mtk_ap_dev_valid(g, d->bridge))
++				return -EAGAIN;
++			ret = br_mtk_ap_check_rtnl(d->port, d->bridge, &d->expected);
++			if (ret)
++				return ret;
++		}
++	}
++	/* Reject unstaged VLAN descendants, including DOWN children and depth >2.
++	 * Namespace-local inheritance means descendants cannot hide in another ns.
++	 */
++	for_each_netdev(g->net, dev) {
++		struct net_device *parent = dev;
++
++		while (is_vlan_dev(parent)) {
++			parent = vlan_dev_direct_real_dev(parent);
++			if (parent == g->dev) {
++				for (i = 1; i < s->count; i++)
++					if (s->domain[i]->port == dev)
++						break;
++				if (i == s->count)
++					return -EAGAIN;
++				descendants++;
++				break;
++			}
++		}
++	}
++	return descendants + 1 == s->count ? 0 : -EAGAIN;
++}
++
++static void mtk_ap_status(struct mtk_ap_bridge_gate *g,
++			  struct mtk_ap_bridge_request *r,
++			  const struct mtk_ap_bridge_policy *p, int error)
++{
++	r->owner = g->owner;
++	r->transaction = g->transaction;
++	r->lease = g->lease;
++	r->driver_ready = p->driver_ready;
++	r->profile_ready = mtk_ap_profile_ready();
++	r->blocked = mtk_ap_bridge_is_blocked(g);
++	r->state = g->dead ? MTK_AP_BRIDGE_DEAD :
++		   r->blocked ? MTK_AP_BRIDGE_BLOCKED : MTK_AP_BRIDGE_READY;
++	r->error = error;
++}
++
++int mtk_ap_bridge_ioctl(struct mtk_ap_bridge_gate *g, void __user *data,
++		       const struct mtk_ap_bridge_policy *p)
++{
++	struct mtk_ap_bridge_request *r;
++	struct mtk_ap_snapshot *old;
++	struct mtk_ap_domain *d;
++	unsigned long flags;
++	u64 cookie, transaction;
++	int ret = 0;
++
++	ASSERT_RTNL();
++	if (IS_ERR_OR_NULL(g))
++		return -ENODEV;
++	if (!ns_capable(g->net->user_ns, CAP_NET_ADMIN))
++		return -EPERM;
++	r = memdup_user(data, sizeof(*r));
++	if (IS_ERR(r))
++		return PTR_ERR(r);
++	if (r->abi != MTK_AP_BRIDGE_ABI || r->size != sizeof(*r)) {
++		ret = -EOPNOTSUPP;
++		goto out;
++	}
++	if (r->ifindex != (u32)g->dev->ifindex || r->reserved0 ||
++	    memchr_inv(r->reserved, 0, sizeof(r->reserved))) {
++		ret = -EINVAL;
++		goto out;
++	}
++	if (g->dead || g->dev->reg_state != NETREG_REGISTERED ||
++	    !net_eq(dev_net(g->dev), g->net)) {
++		ret = -ENODEV;
++		goto status;
++	}
++	if (r->op != MTK_AP_BRIDGE_GET && r->owner != g->owner) {
++		ret = -ESTALE;
++		goto status;
++	}
++	transaction = r->transaction;
++	switch (r->op) {
++	case MTK_AP_BRIDGE_GET:
++		break;
++	case MTK_AP_BRIDGE_PREPARE:
++		if (r->transaction && r->transaction != g->transaction) {
++			ret = -ESTALE;
++			break;
++		}
++		if (r->transaction && !g->open)
++			break; /* Idempotent retry of this confirmed blocked txn. */
++		mtk_ap_bridge_block(g);
++		cookie = mtk_ap_cookie();
++		if (!cookie) {
++			ret = -EOVERFLOW;
++			break;
++		}
++		g->transaction = cookie;
++		mtk_ap_snapshot_free(g->pending);
++		g->pending = NULL;
++		break;
++	case MTK_AP_BRIDGE_STAGE_DOMAIN:
++	case MTK_AP_BRIDGE_COMMIT:
++	case MTK_AP_BRIDGE_ABORT:
++		if (g->open || !r->transaction || r->transaction != g->transaction) {
++			ret = -ESTALE;
++			break;
++		}
++		if (r->op == MTK_AP_BRIDGE_ABORT) {
++			mtk_ap_snapshot_free(g->pending);
++			g->pending = NULL;
++			g->transaction = 0;
++			break;
++		}
++		if (r->op == MTK_AP_BRIDGE_STAGE_DOMAIN) {
++			if (!r->domain_count || r->domain_count > MTK_AP_BRIDGE_MAX_DOMAINS ||
++			    r->domain_index >= r->domain_count ||
++			    (!r->domain_index && r->domain.depth)) {
++				ret = -EINVAL;
++				break;
++			}
++			ret = mtk_ap_domain_structure(&r->domain);
++			if (ret)
++				break;
++			if (!g->pending) {
++				g->pending = kzalloc(sizeof(*g->pending), GFP_KERNEL);
++				if (!g->pending) {
++					ret = -ENOMEM;
++					break;
++				}
++				g->pending->count = r->domain_count;
++			} else if (g->pending->count != r->domain_count) {
++				ret = -EBUSY;
++				break;
++			}
++			d = mtk_ap_stage(g, &r->domain);
++			if (IS_ERR(d)) {
++				ret = PTR_ERR(d);
++				break;
++			}
++			mtk_ap_domain_free(g->pending->domain[r->domain_index]);
++			g->pending->domain[r->domain_index] = d;
++			break;
++		}
++		if (!p->supported_role) {
++			ret = -EOPNOTSUPP;
++			break;
++		}
++		if (!p->driver_ready || !mtk_ap_profile_ready()) {
++			ret = -EAGAIN;
++			break;
++		}
++		ret = mtk_ap_check_snapshot(g, g->pending, p->flags);
++		if (ret)
++			break;
++		cookie = mtk_ap_cookie();
++		if (!cookie) {
++			ret = -EOVERFLOW;
++			break;
++		}
++		/* The last fallible user copy precedes publication. Outer ioctl
++		 * failure remains uncertain; userspace GETs and PREPAREs afresh.
++		 */
++		mtk_ap_status(g, r, p, 0);
++		r->state = MTK_AP_BRIDGE_READY;
++		r->blocked = 0;
++		r->lease = cookie;
++		if (copy_to_user(data, r, sizeof(*r))) {
++			ret = -EFAULT;
++			goto out;
++		}
++		spin_lock_irqsave(&g->lock, flags);
++		if (g->dead || g->transaction != transaction || !transaction ||
++		    !p->driver_ready || !mtk_ap_profile_ready()) {
++			spin_unlock_irqrestore(&g->lock, flags);
++			ret = -EAGAIN;
++			goto out;
++		}
++		old = rcu_replace_pointer(g->committed, g->pending, true);
++		g->pending = NULL;
++		g->lease = cookie;
++		smp_store_release(&g->open, true);
++		spin_unlock_irqrestore(&g->lock, flags);
++		if (old)
++			call_rcu(&old->rcu, mtk_ap_snapshot_rcu_free);
++		goto out;
++	default:
++		ret = -EOPNOTSUPP;
++	}
++status:
++	mtk_ap_status(g, r, p, ret);
++	if (copy_to_user(data, r, sizeof(*r)))
++		ret = -EFAULT;
++out:
++	kfree(r);
++	return ret;
++}
++EXPORT_SYMBOL(mtk_ap_bridge_ioctl);
++
++static struct mtk_ap_domain *mtk_ap_find_domain(struct mtk_ap_snapshot *s,
++					      const struct net_device *dev)
++{
++	unsigned int i;
++
++	if (!s)
++		return NULL;
++	for (i = 0; i < s->count; i++)
++		if (s->domain[i]->port == dev)
++			return s->domain[i];
++	return NULL;
++}
++
++/* Read Ethernet tags without changing skb offsets, metadata or ownership. */
++static int mtk_ap_tags(const struct sk_buff *skb,
++		      struct mtk_ap_bridge_tag *tag)
++{
++	struct ethhdr ethbuf, *eth;
++	struct vlan_hdr vhbuf, *vh;
++	__be16 proto;
++	int off = skb_mac_header_was_set(skb) ? skb_mac_offset(skb) : 0;
++	unsigned int n = 0;
++
++	if (skb_vlan_tag_present(skb)) {
++		if (!eth_type_vlan(skb->vlan_proto))
++			return -EINVAL;
++		tag[n].proto = ntohs(skb->vlan_proto);
++		tag[n++].vid = skb_vlan_tag_get_id(skb);
++	}
++	eth = skb_header_pointer(skb, off, sizeof(ethbuf), &ethbuf);
++	if (!eth)
++		return -EINVAL;
++	proto = eth->h_proto;
++	off += ETH_HLEN;
++	while (eth_type_vlan(proto)) {
++		if (n == MTK_AP_BRIDGE_MAX_TAGS)
++			return -E2BIG;
++		vh = skb_header_pointer(skb, off, sizeof(vhbuf), &vhbuf);
++		if (!vh)
++			return -EINVAL;
++		tag[n].proto = ntohs(proto);
++		tag[n++].vid = ntohs(vh->h_vlan_TCI) & VLAN_VID_MASK;
++		proto = vh->h_vlan_encapsulated_proto;
++		off += sizeof(*vh);
++	}
++	return n;
++}
++
++static int mtk_ap_resolve_rcu(struct mtk_ap_bridge_gate *g,
++			     const struct net_device *actual,
++			     const struct sk_buff *skb,
++			     struct mtk_ap_bridge_info *info, u16 *index, u16 *selected_vid)
++{
++	struct mtk_ap_bridge_tag tags[MTK_AP_BRIDGE_MAX_TAGS] = {};
++	struct mtk_ap_snapshot *s;
++	struct mtk_ap_domain *d;
++	struct net_device *port;
++	u16 vid = 0;
++	int n;
++	unsigned int i;
++
++	RCU_LOCKDEP_WARN(!rcu_read_lock_held(), "AP resolve without RCU");
++	memset(info, 0, sizeof(*info));
++	if (mtk_ap_bridge_is_blocked(g))
++		return -EACCES;
++	s = rcu_dereference(g->committed);
++	d = mtk_ap_find_domain(s, actual);
++	if (!d)
++		return -EXDEV;
++	port = d->port;
++	n = skb ? mtk_ap_tags(skb, tags) : 0;
++	if (n < 0)
++		return n;
++	if (d->expected.depth + n > MTK_AP_BRIDGE_MAX_TAGS)
++		return -E2BIG;
++	for (i = 0; i < (unsigned int)n; i++) {
++		struct net_device *child;
++
++		/* Priority-tagged frames retain this domain, as in vlan_do_receive. */
++		if (!tags[i].vid)
++			continue;
++		if (tags[i].vid == VLAN_VID_MASK)
++			return -EINVAL;
++		child = vlan_find_dev_rcu(port, htons(tags[i].proto), tags[i].vid);
++		if (!child) {
++			vid = d->bridge && tags[i].proto ==
++			      d->expected.bridge_vlan_proto ? tags[i].vid : 0;
++			/* A bridge receives tags not claimed by a VLAN child. */
++			if (!d->bridge)
++				return -EXDEV;
++			break;
++		}
++		d = mtk_ap_find_domain(s, child);
++		if (!d)
++			return -EXDEV;
++		port = child;
++	}
++	if (!mtk_ap_domain_chain(g, d))
++		return -ESTALE;
++	if (d->bridge) {
++		if (!mtk_ap_dev_valid(g, d->bridge) ||
++		    !br_mtk_ap_check_rcu(port, d->bridge, &d->expected, vid))
++			return -ESTALE;
++	} else if (netdev_master_upper_dev_get_rcu(port) ||
++		   rcu_dereference(port->rx_handler)) {
++		return -ESTALE;
++	}
++	info->port = port;
++	info->bridge = d->bridge;
++	info->bridged = !!d->bridge;
++	info->policy = d->expected.policy;
++	if (index)
++		for (i = 0; i < s->count; i++)
++			if (s->domain[i] == d) {
++				*index = i;
++				break;
++			}
++	if (selected_vid)
++		*selected_vid = vid;
++	return 0;
++}
++
++int mtk_ap_bridge_resolve_rcu(struct mtk_ap_bridge_gate *g,
++			     const struct net_device *actual,
++			     const struct sk_buff *skb,
++			     struct mtk_ap_bridge_info *info)
++{
++	return mtk_ap_resolve_rcu(g, actual, skb, info, NULL, NULL);
++}
++EXPORT_SYMBOL(mtk_ap_bridge_resolve_rcu);
++
++#define MTK_AP_TX_DOMAIN_VALID 1U
++
++bool mtk_ap_bridge_tx_domain_validate(const struct sk_buff *skb,
++				   const struct mtk_ap_bridge_reader *r)
++{
++	const struct mtk_ap_bridge_skb_ext *e;
++	struct mtk_ap_snapshot *s;
++	struct mtk_ap_domain *d;
++	bool ok = false;
++
++	if (!mtk_ap_bridge_validate(skb, r, false))
++		return false;
++	e = skb_ext_find(skb, SKB_EXT_MTK_BSS);
++	if (e->tx_flags != MTK_AP_TX_DOMAIN_VALID)
++		return false;
++	rcu_read_lock();
++	s = rcu_dereference(r->gate->committed);
++	if (!s || e->tx_domain >= s->count)
++		goto out;
++	d = s->domain[e->tx_domain];
++	if (!mtk_ap_domain_chain(r->gate, d))
++		goto out;
++	if (d->bridge)
++		ok = mtk_ap_dev_valid(r->gate, d->bridge) &&
++		     br_mtk_ap_check_rcu(d->port, d->bridge, &d->expected, e->tx_vid);
++	else
++		ok = !netdev_master_upper_dev_get_rcu(d->port) &&
++		     !rcu_dereference(d->port->rx_handler);
++out:
++	rcu_read_unlock();
++	return ok;
++}
++EXPORT_SYMBOL(mtk_ap_bridge_tx_domain_validate);
++
++bool mtk_ap_bridge_tx_domain_stamp(struct sk_buff *skb,
++				const struct mtk_ap_bridge_reader *r)
++{
++	struct mtk_ap_bridge_skb_ext *e;
++	struct mtk_ap_bridge_info info;
++	u16 domain, vid;
++	int ret;
++
++	if (!r->gate)
++		return false;
++	e = skb_ext_find(skb, SKB_EXT_MTK_BSS);
++	if (e && (e->tx_owner || e->tx_lease || e->tx_flags))
++		return mtk_ap_bridge_tx_domain_validate(skb, r);
++	rcu_read_lock();
++	ret = mtk_ap_resolve_rcu(r->gate, r->gate->dev, skb, &info, &domain, &vid);
++	rcu_read_unlock();
++	if (ret || !mtk_ap_bridge_stamp(skb, r, false))
++		return false;
++	e = skb_ext_add(skb, SKB_EXT_MTK_BSS);
++	if (!e)
++		return false;
++	e->tx_domain = domain;
++	e->tx_vid = vid;
++	e->tx_flags = MTK_AP_TX_DOMAIN_VALID;
++	return true;
++}
++EXPORT_SYMBOL(mtk_ap_bridge_tx_domain_stamp);
++
++int mtk_ap_bridge_match_rcu(struct mtk_ap_bridge_gate *g,
++			   const struct net_device *actual,
++			   const struct sk_buff *skb,
++			   struct mtk_ap_bridge_info *info)
++{
++	const struct net_device *parent = actual;
++	int ret;
++
++	if (IS_ERR_OR_NULL(g) || !actual)
++		return 0;
++	while (parent != g->dev && is_vlan_dev(parent))
++		parent = vlan_dev_direct_real_dev(parent);
++	if (parent != g->dev)
++		return 0;
++	ret = mtk_ap_bridge_resolve_rcu(g, actual, skb, info);
++	return ret ? ret : 1;
++}
++EXPORT_SYMBOL(mtk_ap_bridge_match_rcu);
+--- a/net/core/skbuff.c
++++ b/net/core/skbuff.c
+@@ -51,6 +51,7 @@
+ #endif
+ #include <linux/string.h>
+ #include <linux/skbuff.h>
++#include <linux/mtk_ap_bridge.h>
+ #include <linux/skbuff_ref.h>
+ #include <linux/splice.h>
+ #include <linux/cache.h>
+@@ -5095,6 +5096,9 @@
+ #define SKB_EXT_CHUNKSIZEOF(x)	(ALIGN((sizeof(x)), SKB_EXT_ALIGN_VALUE) / SKB_EXT_ALIGN_VALUE)
+ 
+ static const u8 skb_ext_type_len[] = {
++#if IS_ENABLED(CONFIG_MTK_AP_BRIDGE)
++	[SKB_EXT_MTK_BSS] = SKB_EXT_CHUNKSIZEOF(struct mtk_ap_bridge_skb_ext),
++#endif
+ #if IS_ENABLED(CONFIG_BRIDGE_NETFILTER)
+ 	[SKB_EXT_BRIDGE_NF] = SKB_EXT_CHUNKSIZEOF(struct nf_bridge_info),
+ #endif
+--- a/net/netfilter/nf_flow_table_core.c
++++ b/net/netfilter/nf_flow_table_core.c
+@@ -307,6 +307,9 @@
+ {
+ 	int err;
+ 
++	if (IS_ENABLED(CONFIG_MTK_AP_BRIDGE))
++		return -EOPNOTSUPP;
++
+ 	flow->timeout = nf_flowtable_time_stamp + flow_offload_get_timeout(flow);
+ 
+ 	err = rhashtable_insert_fast(&flow_table->rhashtable,
+@@ -341,6 +344,9 @@
+ 			  struct flow_offload *flow, bool force)
+ {
+ 	u32 timeout;
++
++	if (IS_ENABLED(CONFIG_MTK_AP_BRIDGE))
++		return;
+ 
+ 	timeout = nf_flowtable_time_stamp + flow_offload_get_timeout(flow);
+ 	if (force || timeout - READ_ONCE(flow->timeout) > HZ)
+@@ -538,6 +544,9 @@
+ 	struct flow_offload *flow;
+ 	int dir;
+ 
++	if (IS_ENABLED(CONFIG_MTK_AP_BRIDGE))
++		return NULL;
++
+ 	tuplehash = rhashtable_lookup(&flow_table->rhashtable, tuple,
+ 				      nf_flow_offload_rhash_params);
+ 	if (!tuplehash)
+--- a/net/netfilter/nft_flow_offload.c
++++ b/net/netfilter/nft_flow_offload.c
+@@ -570,6 +570,9 @@
+ 	u8 ttl = 0;
+ 	int ret;
+ 
++	if (IS_ENABLED(CONFIG_MTK_AP_BRIDGE))
++		goto out;
++
+ 	if (nft_flow_offload_skip(pkt->skb, nft_pf(pkt)))
+ 		goto out;
+ 
+--- a/net/netfilter/xt_FLOWOFFLOAD.c
++++ b/net/netfilter/xt_FLOWOFFLOAD.c
+@@ -698,6 +698,9 @@
+ 	u32 offset = 0;
+ 	u8 tos = 0;
+ 
++	if (IS_ENABLED(CONFIG_MTK_AP_BRIDGE))
++		return XT_CONTINUE;
++
+ 	if (xt_flowoffload_skip(skb, xt_family(par)))
+ 		return XT_CONTINUE;
+ 
