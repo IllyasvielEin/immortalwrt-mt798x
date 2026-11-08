@@ -12,7 +12,7 @@ tests = Path(__file__).parent
 
 
 def function(source, name):
-    match = re.search(r"^(?:bool|int|UINT32)\s+" + re.escape(name) + r"\(", source, re.M)
+    match = re.search(r"^(?:bool|int|INT|UINT32)\s+" + re.escape(name) + r"\(", source, re.M)
     assert match is not None, name
     opening = source.index("{", match.start())
     depth, end = 1, opening + 1
@@ -29,12 +29,19 @@ with tempfile.TemporaryDirectory(prefix="ax6000-bridge-driver-") as directory:
         "mtk_ap_plain_ap", "mtk_ap_rx_authorize", "mtk_ap_rx_fragment_prepare")))
     source = (driver / "mt_wifi/embedded/common/token.c").read_text()
     (build / "token.inc").write_text(function(source, "token_rx_dmad_init"))
+    source = (driver / "mt_wifi/embedded/common/fq_qm.c").read_text()
+    (build / "fq.inc").write_text(function(source, "set_fq_enable"))
+    source = (driver / "mt_wifi/embedded/ap/ap_cfg.c").read_text()
+    (build / "setter.inc").write_text(function(source, "RTMPAPPrivIoctlSet"))
+    entry = re.search(r'^\s*\{"fq_en",\s*set_fq_enable\},', source, re.M)
+    assert entry is not None, "actual fq_en registration missing"
+    (build / "fq-entry.inc").write_text(entry[0] + "\n")
     flags = [os.environ.get("CC", "cc"), "-std=gnu11", "-O1", "-g",
              "-Wall", "-Wextra", "-Werror", "-fsanitize=address,undefined",
              "-fno-omit-frame-pointer", "-pthread", "-DCONFIG_MTK_AP_BRIDGE=1",
              "-I" + str(build), "-I" + str(driver / "mt_wifi/embedded/include")]
     env = {**os.environ, "ASAN_OPTIONS": "detect_leaks=0", "UBSAN_OPTIONS": "halt_on_error=1"}
-    for name in ("wire", "authorization", "token"):
+    for name in ("wire", "authorization", "token", "setter"):
         binary = build / ("test-" + name)
         subprocess.run([*flags, str(tests / ("test_" + name + ".c")), "-o", str(binary)], check=True)
         subprocess.run([str(binary)], check=True, env=env)

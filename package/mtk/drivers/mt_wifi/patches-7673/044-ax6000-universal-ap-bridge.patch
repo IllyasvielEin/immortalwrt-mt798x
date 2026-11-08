@@ -2332,7 +2332,7 @@
  			tx_blk->resource_idx = hif_get_resource_idx(pAd->hdev_ctrl, wdev, 0, 0);
 --- a/mt_wifi/embedded/common/fq_qm.c
 +++ b/mt_wifi/embedded/common/fq_qm.c
-@@ -1023,6 +1023,12 @@
+@@ -1023,6 +1023,15 @@
  
  INT set_fq_enable(PRTMP_ADAPTER pAd, RTMP_STRING *arg)
  {
@@ -2340,12 +2340,15 @@
 +	/* Runtime QM/TM replacement is outside the fixed CPU product lifecycle. */
 +	(void)pAd;
 +	(void)arg;
-+	return -EOPNOTSUPP;
++	/* Private set_proc callbacks use TRUE/FALSE; the ioctl dispatcher
++	 * converts FALSE to an error. A negative errno would look successful.
++	 */
++	return FALSE;
 +#else
  	UINT32 en, rv, factor;
  	RTMP_CHIP_CAP *cap = hc_get_chip_cap(pAd->hdev_ctrl);
  	struct qm_ops **qm_ops = &pAd->qm_ops;
-@@ -1078,6 +1084,7 @@
+@@ -1078,6 +1087,7 @@
  		return FALSE;
  
  	return TRUE;
