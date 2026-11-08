@@ -1,6 +1,6 @@
 # AX6000 桥转发修复：独立开发工作区
 
-**Astra r3.1 已给出设计 GO，正在独立分支实施、编译和故障注入；尚未通过实际实现审查、完整固件或硬件验收。当前进度见 [PROGRESS.md](PROGRESS.md)。**
+**Astra 实际实现 R2 复审已 GO，允许推送隔离分支进入一次 CI 编译；完整固件、硬件与性能仍待验收。当前进度见 [PROGRESS.md](PROGRESS.md)，关闭依据见 [R2 复审报告](roaming-bridge-implementation-astra-review-r2.md)。**
 
 当前工作区：`/home/illya/workspace/router/ax6000/worktrees/bridge-forwarding`。
 
@@ -10,7 +10,7 @@
 
 当前设计状态：[r3.1 Astra 复审](roaming-bridge-final-astra-review-r3-1.md) 关闭唯一 WARP STOP 设计阻断，允许进入当前隔离分支实施。[r3.1 主稿](roaming-bridge-final-design-r3.md) 保留固定软件转发、基础 WED 和正常成功在线 L1 SER，必要 P2 均须落到实际代码和验收。
 
-后续顺序：完成实现与测试 → Astra 实际实现审查 → 修正阻断 → 推送隔离分支并触发 CI。生产补丁不混入旧 043 诊断，不改变 uBoot/分区，不自动刷机或发布正式 Release；沿用用户通知 CI 完成、不持续查询的约定。
+实现、测试、审查问题修正与 R2 复审已完成；后续为推送隔离分支并触发一次 CI，等待用户通知结果。生产补丁不混入旧 043 诊断，不改变 uBoot/分区，不自动刷机或发布正式 Release；沿用不持续查询 CI 的约定。
 
 范围控制：每组变更写明与直接转发故障及必要安全合同的依赖，按独立可审提交推进。保留“已进入 Linux 或已提交硬件的数据属于正常在途”的边界，不自行增加撤回所有 socket/backlog/qdisc 数据的目标。新增维护限制、功能关闭和接口改动必须在设计与实现审查中显式列出，不由文档假定已获技术放行。
 
