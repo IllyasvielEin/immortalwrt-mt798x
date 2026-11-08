@@ -2,10 +2,19 @@
 	"luci-app-eqos": {
 		"description": "Grant UCI access for luci-app-eqos",
 		"read": {
-			"uci": [ "eqos" ]
+			"uci": [
+				"eqos"
+			],
+			"file": {
+				"/usr/share/ax6000/forwarding-mode": [
+					"read"
+				]
+			}
 		},
 		"write": {
-			"uci": [ "eqos" ]
+			"uci": [
+				"eqos"
+			]
 		}
 	}
 }

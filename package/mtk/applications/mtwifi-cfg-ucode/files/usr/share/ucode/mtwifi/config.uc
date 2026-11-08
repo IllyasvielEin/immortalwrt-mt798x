@@ -21,6 +21,7 @@ import * as datconf from 'datconf';
 import { defs } from 'mtwifi.defaults';
 import { log } from 'mtwifi.utils';
 import * as driver from 'mtwifi.driver';
+import * as netifd from 'mtwifi.netifd';
 import * as converter from 'mtwifi.converter';
 
 function get_sibling_devs(my_devname, all_devnames) {
@@ -37,7 +38,7 @@ function get_sibling_devs(my_devname, all_devnames) {
 
     // regex expressions to match sibling dev names
     // starts with prefix e.g. "MT7981_1_", following with number
-    let sib_regex = regexp("^" + prefix + "_\\d+$");
+    let sib_regex = regexp("^" + prefix + "_[0-9]+$");
 
     for (let idx, devname in all_devnames) {
         if (devname == my_devname) continue;
@@ -54,8 +55,9 @@ function sync_chip_config(src_dat, sib_devnames, all_devs) {
 	for (let idx, devname in sib_devnames) {
 		let sib_info = all_devs[devname];
 
-		if (!sib_info.profile_path) continue;
+		if (!sib_info.profile_path) die(`[Sync] Missing profile for ${devname}`);
 		let sib_dat = datconf.open(sib_info.profile_path);
+		if (!sib_dat) die(`[Sync] Unable to open profile for ${devname}`);
 		if (sib_dat) {
 			let s_updates = {};
 			for (let k, v in defs.CHIP_CFGS) {
@@ -69,8 +71,8 @@ function sync_chip_config(src_dat, sib_devnames, all_devs) {
 			log.debug(`[Sync] s_updates: keys_raw: ${s_updates}, len: ${length(s_updates)}`);
 			if (length(s_updates) > 0) {
 				log.info(`[Sync] Syncing chip configs to ${devname}`);
-				sib_dat.merge(s_updates);
-				sib_dat.commit();
+				if (!sib_dat.merge(s_updates) || !sib_dat.commit())
+					die(`[Sync] Unable to commit profile for ${devname}`);
 			}
 			sib_dat.close();
 		}
@@ -110,7 +112,7 @@ function dat_diff(dat_old, dat_new) {
 
 export function setup(uci_cfg, all_devs) {
 	// check prerequisites for driver setup
-	if (check_prerequisite()) return;
+	if (check_prerequisite()) die("driver prerequisites failed");
 
 	// get current dev name
 	let cur_devname = uci_cfg.device;
@@ -119,14 +121,12 @@ export function setup(uci_cfg, all_devs) {
 
 	/*****    UCI CFG => DAT CFG   *******/
 	if (!cur_dev.profile_path) {
-		log.error(`[Main] Profile not found for ${cur_devname}`);
-		return;
+		die(`[Main] Profile not found for ${cur_devname}`);
 	}
 
 	let ctx = datconf.open(cur_dev.profile_path);
 	if (!ctx) {
-		log.error(`[Main] Unable to open profile path for ${cur_devname}`);
-		return;
+		die(`[Main] Unable to open profile path for ${cur_devname}`);
 	}
 	// get old DAT config
 	let dat_old = ctx.getall();
@@ -145,21 +145,26 @@ export function setup(uci_cfg, all_devs) {
 
 	// collect down devs list
 	let down_devnames = [ cur_devname ];
+	let sib_devnames = [];
 	
 	let is_dbdc = (index(cur_dev.profile_path, "dbdc") >= 0);
 	// only add sibling devs when DAT has changed
 	if (is_dbdc && diff_res.is_changed) {
 		// find sibling devs for current dev
 		let all_devnames = keys(all_devs);
-		let sib_devnames = get_sibling_devs(cur_devname, all_devnames);
+		sib_devnames = get_sibling_devs(cur_devname, all_devnames);
 		log.debug(`[Main] Sibling devs of ${cur_devname} : ${sib_devnames}`);
 
-		// sync current chip config to other sibling devs
-		if (uci_cfg.config.dbdc_main) {
-			sync_chip_config(dat_new, sib_devnames, all_devs);
-		}
 		for (let devname in sib_devnames) push(down_devnames, devname);
 	}
+
+	for (let devname in down_devnames) {
+		netifd.prepare_vifs(driver.scan_related_vifs(all_devs[devname]), all_devs[devname]);
+	}
+	// No DAT, including a sibling profile, changes before every affected AP
+	// has acknowledged PREPARE. datconf returns null (not false) on errors.
+	if (is_dbdc && diff_res.is_changed && uci_cfg.config.dbdc_main)
+		sync_chip_config(dat_new, sib_devnames, all_devs);
 
 	// collect vifs needed to be restored
 	// if DAT is changed! => UP vifs of ALL sibling devs,
@@ -177,9 +182,9 @@ export function setup(uci_cfg, all_devs) {
 	}
 
 	// commit converted DAT config
-	ctx.merge(dat_new);
-	ctx.commit();
+	if (!ctx.merge(dat_new) || !ctx.commit()) die("failed to commit wireless profile");
 	ctx.close();
+	netifd.set_data({ bridge_btnbssid: +(dat_new.NoForwardingBTNBSSID ?? dat_old.NoForwardingBTNBSSID ?? 0) != 0 });
 	system("sync");
 
 	// reload driver if needed
@@ -226,7 +231,8 @@ export function setup(uci_cfg, all_devs) {
 	if (!is_dbdc) return;
 
 	// for DBDC cards, restore sibling devs
-	if (diff_res.need_reload) {
+	if (diff_res.need_reload || netifd.cpu_profile) {
+		// In CPU profile siblings must run their complete activation handshake.
 		// in driver reload situation, 
 		// let another process to handle sib devs setup
 		for (let idx, devname in down_devnames) {
@@ -257,11 +263,13 @@ export function down(cur_devname, all_devs) {
 	if(cur_devname) {
 		let cur_dev = all_devs[cur_devname];
 		let vifs = driver.scan_related_vifs(cur_dev);
+		netifd.prepare_vifs(vifs, cur_dev);
 		for (let vif in vifs) driver.ifdown(vif);
 	} else {
 		// loop to DOWN all
 		for (let devname, dev in all_devs){
 			let vifs = driver.scan_related_vifs(dev);
+			netifd.prepare_vifs(vifs, dev);
 			for (let vif in vifs) driver.ifdown(vif);
 		}
 	}

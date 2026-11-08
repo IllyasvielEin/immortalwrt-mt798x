@@ -37,3 +37,12 @@ msgstr "总上传带宽。"
 
 msgid "Values 1-31 use HNAT HQoS. Values 32 and above use software shaping."
 msgstr "编号 1-31 使用 HNAT HQoS；编号 32 及以上使用软件限速。"
+
+msgid "Software bandwidth control."
+msgstr "软件带宽控制。"
+
+msgid "All rules use software shaping; rule IDs range from 1 to 65533."
+msgstr "全部规则使用软件限速，规则编号范围为 1 至 65533。"
+
+msgid "Rule ID"
+msgstr "规则编号"
