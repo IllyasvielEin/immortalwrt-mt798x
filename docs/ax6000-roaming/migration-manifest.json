@@ -1,0 +1,57 @@
+{
+  "base_commit": "c196312d3916fad77fa0bb47db57e4b685c15f03",
+  "branch": "fix/ax6000-bridge-forwarding",
+  "worktree": "/home/illya/workspace/router/ax6000/worktrees/bridge-forwarding",
+  "sources": [
+    {
+      "name": "roaming-bridge-final-design.md",
+      "source": "/home/illya/workspace/router/ax6000/research/roaming-bridge-final-design.md",
+      "sha256": "368eee1fa2ce88423cf3d5372b4c6999f6476fe731ae4e10fdb5c65e06dea689"
+    },
+    {
+      "name": "roaming-bridge-final-astra-review.md",
+      "source": "/home/illya/workspace/router/ax6000/research/roaming-bridge-final-astra-review.md",
+      "sha256": "eb7435eecc994bde6a49e591ce43cc4a92c4c4fa229acdeb80a86ce4acef31df"
+    },
+    {
+      "name": "bridge-universal-rx-design.md",
+      "source": "/home/illya/workspace/router/ax6000/research/bridge-universal-rx-design.md",
+      "sha256": "dda83c5e92cce16a2e9b857a69439736e7ee36328a34343ca49dd3f0a419d459"
+    },
+    {
+      "name": "bridge-universal-policy-design.md",
+      "source": "/home/illya/workspace/router/ax6000/research/bridge-universal-policy-design.md",
+      "sha256": "79180e078a96da6c4057206aa3158d657cd8ac966d13d3642cf5c89122460ebd"
+    },
+    {
+      "name": "bridge-universal-offload-design.md",
+      "source": "/home/illya/workspace/router/ax6000/research/bridge-universal-offload-design.md",
+      "sha256": "28e22f37ebf3cc9aa39f96f2a17f2a361ab8dd431f42ed84efb6fe06947bf31c"
+    },
+    {
+      "name": "roaming-root-cause-and-fix.md",
+      "source": "/home/illya/workspace/router/ax6000/research/roaming-root-cause-and-fix.md",
+      "sha256": "a08df75b8ecb4f35bef849ed1655e1679405356532a8cc5715bf4d3dd678c16e"
+    },
+    {
+      "name": "roaming-community-solutions.md",
+      "source": "/home/illya/workspace/router/ax6000/research/roaming-community-solutions.md",
+      "sha256": "e31d54d9dad0733217840657650126e56d67e4ba67af008389d0cb86e11e90a3"
+    },
+    {
+      "name": "roaming-options-proposal.md",
+      "source": "/home/illya/workspace/router/ax6000/research/roaming-options-proposal.md",
+      "sha256": "4f6da986a57f60c3ca36759fbd70db4b0e6899fd9466b7c9ebad99d6b69ef5c5"
+    },
+    {
+      "name": "roaming-astra-feasibility-review.md",
+      "source": "/home/illya/workspace/router/ax6000/research/roaming-astra-feasibility-review.md",
+      "sha256": "59cbf7862ad2878e461c2856517c8eee84a85dec11431fbe3cff56f3ad7160c2"
+    },
+    {
+      "name": "roaming-bridge-implementation-plan.md",
+      "source": "/home/illya/workspace/router/ax6000/research/roaming-bridge-implementation-plan.md",
+      "sha256": "119dfdf7d3748819643a748aaef600cd4dbf1f6e8a7e4dc4dba96fc0bb808085"
+    }
+  ]
+}
