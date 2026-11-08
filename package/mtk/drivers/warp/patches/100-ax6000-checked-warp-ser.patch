@@ -719,15 +719,642 @@
  	u8 status;
 --- a/mcu/warp_msg.c
 +++ b/mcu/warp_msg.c
-@@ -555,7 +555,7 @@
- 			&node->recv_done, msecs_to_jiffies(timeout)) == 0) {
+@@ -320,156 +320,100 @@
+ {
+ 	struct warp_msg_wait_node *node = NULL;
  
- 			warp_dbg(WARP_DBG_ERR, "%s(), uni_id:%d(cmd_id:%d), timeout\n", __func__, node->uni_id, node->cmd_id);
+-	warp_os_alloc_mem((unsigned char **)&node, sizeof(struct warp_msg_wait_node), GFP_ATOMIC);
+-
+-	if (node != NULL) {
+-		memset(node, 0, sizeof(struct warp_msg_wait_node));
+-		node->cmd_id = (u8)msg_cmd->param.cmd_id;
+-		node->wait_type = msg_cmd->param.wait_type;
+-		node->rsp_hdlr = msg_cmd->param.rsp_hdlr;
+-		node->user_data = msg_cmd->param.user_data;
+-		init_completion(&node->recv_done);
+-	} else {
+-		warp_dbg(WARP_DBG_ERR, "%s(), node is null !!\n", __func__);
+-	}
+-
++	warp_os_alloc_mem((unsigned char **)&node, sizeof(*node), GFP_ATOMIC);
++	if (!node)
++		return NULL;
++	memset(node, 0, sizeof(*node));
++	refcount_set(&node->refs, 1); /* sender */
++	node->cmd_id = (u8)msg_cmd->param.cmd_id;
++	node->wait_type = msg_cmd->param.wait_type;
++	node->copy_response = msg_cmd->param.rsp_hdlr ||
++		msg_cmd->param.wait_type == WARP_MSG_WAIT_TYPE_RSP_MSG;
++	node->expected_rsp_len = msg_cmd->rsp_msg_len;
++	init_completion(&node->recv_done);
+ 	return node;
+ }
+ 
+-static int warp_msg_wait_node_deinit(struct warp_msg_wait_node *node)
+-{
+-	int ret = -1;
+-
+-	if (node != NULL) {
+-		memset(node, 0, sizeof(struct warp_msg_wait_node));
+-
++static void warp_msg_wait_node_put(struct warp_msg_wait_node *node)
++{
++	if (node && refcount_dec_and_test(&node->refs)) {
++		if (node->rsp_msg)
++			warp_os_free_mem(node->rsp_msg);
+ 		warp_os_free_mem(node);
+-
+-		ret = 0;
+-	} else {
+-		warp_dbg(WARP_DBG_ERR, "%s(), node is invalid !!\n", __func__);
+-	}
+-
++	}
++}
++
++static int warp_msg_wait_node_enq(struct warp_msg_wait_queue *msg_q,
++				  struct warp_msg_wait_node *node)
++{
++	struct warp_msg_wait_node **tail;
++	int ret;
++
++	spin_lock_bh(&msg_q->wait_lock);
++	if (msg_q->state != MSG_Q_INITED) {
++		ret = -ESHUTDOWN;
++		goto out;
++	}
++	for (tail = &msg_q->head; *tail; tail = &(*tail)->next)
++		;
++	node->uni_id = ++msg_q->current_uni_id;
++	if (!node->uni_id)
++		node->uni_id = ++msg_q->current_uni_id;
++	node->next = NULL;
++	refcount_inc(&node->refs); /* queue; later transferred on response claim */
++	*tail = node;
++	msg_q->size++;
++	ret = node->uni_id;
++out:
++	spin_unlock_bh(&msg_q->wait_lock);
+ 	return ret;
+ }
+ 
+-
+-static int warp_msg_wait_node_enq(
+-	struct warp_msg_wait_queue *msg_q, struct warp_msg_wait_node *node)
+-{
+-	struct warp_msg_wait_node *last;
+-
+-	warp_dbg(WARP_DBG_LOU, "%s(), cmd_id:%d, node:%p\n", __func__,
+-			node->cmd_id, node);
++/* wait_lock held. The queue reference is transferred, never freed here. */
++static bool warp_msg_wait_node_deq(struct warp_msg_wait_queue *msg_q,
++				  struct warp_msg_wait_node *node)
++{
++	struct warp_msg_wait_node **link;
++
++	for (link = &msg_q->head; *link; link = &(*link)->next) {
++		if (*link == node) {
++			*link = node->next;
++			node->next = NULL;
++			msg_q->size--;
++			return true;
++		}
++	}
++	return false;
++}
++
++static void warp_msg_wait_cancel(struct warp_msg_wait_queue *msg_q,
++				 struct warp_msg_wait_node *node)
++{
++	bool removed;
+ 
+ 	spin_lock_bh(&msg_q->wait_lock);
+-
+-	if (msg_q->head == NULL) {
+-		msg_q->head = node;
+-	} else {
+-		last = msg_q->head;
+-		while (last->next) {
+-			last = last->next;
+-		}
+-		last->next = node;
+-	}
+-
+-	node->next = NULL;
+-	node->uni_id = (++msg_q->current_uni_id);
+-	if (node->uni_id == 0) {
+-		/* Bypass "node->uni_id = 0" case */
+-		node->uni_id++;
+-		msg_q->current_uni_id++;
+-	}
+-	msg_q->size++;
+-
++	/* Identity, not uni_id: a timeout must never cancel another request. */
++	removed = warp_msg_wait_node_deq(msg_q, node);
+ 	spin_unlock_bh(&msg_q->wait_lock);
+-
+-	warp_dbg(WARP_DBG_LOU, "%s(), cmd_id:%d, uni_id:%d, size:%d\n", __func__,
+-			node->cmd_id, node->uni_id, msg_q->size);
+-
+-	return node->uni_id;
+-}
+-
+-
+-static void warp_msg_wait_node_deq(
+-    struct warp_msg_wait_queue *msg_q, struct warp_msg_wait_node *node)
+-{
+-	struct warp_msg_wait_node *cur_node, *prev_node = NULL;
+-	u32 seach_cnt = 0;
+-
+-	warp_dbg(WARP_DBG_LOU, "%s(), cmd_id:%d, uni_id:%d, size:%d\n", __func__,
+-		node->cmd_id, node->uni_id, msg_q->size);
+-
+-	cur_node = msg_q->head;
+-	seach_cnt = msg_q->size;
+-
+-	while (cur_node != NULL && cur_node != node) {
+-		prev_node = cur_node;
+-		cur_node = cur_node->next;
+-
+-		if (seach_cnt)
+-			seach_cnt--;
+-		else {
+-			warp_dbg(WARP_DBG_OFF, "%s(%d), surspicious search! break forcedly! last_node:%p\n",
+-					 __func__, __LINE__, cur_node);
+-			cur_node = NULL;
+-			break;
+-		}
+-	}
+-
+-	if (cur_node == NULL) {
+-		warp_dbg(WARP_DBG_OFF, "%s(), cmd_id:%d, node:%p NOT found! msg_q->size:%d\n", __func__,
+-				node->cmd_id, node, msg_q->size);
+-		return;
+-	} else if (cur_node == msg_q->head) {
+-		msg_q->head = cur_node->next;
+-	} else if (prev_node != NULL) {
+-		prev_node->next = cur_node->next;
+-	}
+-
+-	msg_q->size--;
+-
+-	warp_dbg(WARP_DBG_LOU, "%s(), cmd_id:%d, node:%p found! msg_q->size:%d\n", __func__,
+-			node->cmd_id, node, msg_q->size);
+-
++	if (removed)
++		warp_msg_wait_node_put(node); /* queue */
+ }
+ 
+ static struct warp_msg_wait_node *warp_msg_get_wait_node_by_uni_id(
+-    struct warp_msg_wait_queue *msg_q, u16 uni_id)
++	struct warp_msg_wait_queue *msg_q, u16 uni_id)
+ {
+ 	struct warp_msg_wait_node *node = NULL;
+-	u32 q_len = 0;
+ 
+ 	spin_lock_bh(&msg_q->wait_lock);
+-
+-	warp_dbg(WARP_DBG_LOU, "%s(), searching uni id:%d, msg_q->size:%d\n", __func__,
+-				uni_id, msg_q->size);
+-
+-	node = msg_q->head;
+-	q_len = msg_q->size;
+-
+-	while (node != NULL && node->uni_id != uni_id) {
+-		node = node->next;
+-		if (q_len)
+-			q_len--;
+-		else {
+-			warp_dbg(WARP_DBG_OFF, "%s(%d), surspicious search! break forcedly! last_node:%p\n",
+-					 __func__, __LINE__, node);
+-			node = NULL;
+-			break;
+-		}
+-	}
+-
+-	if (node) {
+-		warp_dbg(WARP_DBG_LOU, "%s(), uni id:%d, node:%p found!msg_q->size:%d\n", __func__,
+-					uni_id, node, msg_q->size);
+-
+-		warp_msg_wait_node_deq(msg_q, node);
+-	}
+-
++	if (msg_q->state == MSG_Q_INITED) {
++		for (node = msg_q->head; node; node = node->next)
++			if (node->uni_id == uni_id)
++				break;
++		if (node)
++			warp_msg_wait_node_deq(msg_q, node);
++	}
+ 	spin_unlock_bh(&msg_q->wait_lock);
+-
++	/* The response processor now owns the former queue reference. */
+ 	return node;
+ }
+ 
+@@ -477,8 +421,12 @@
+ 	u8 wed_idx, struct warp_msg_cmd *msg_cmd, u16 uni_id)
+ {
+ 
+-	u16 header_len = sizeof(struct warp_cmd_header);
+-	u16 sendmsg_len = header_len + msg_cmd->msg_len;
++	u32 header_len = sizeof(struct warp_cmd_header);
++	u32 sendmsg_len;
++	if (msg_cmd->msg_len > WARP_MSG_MAX_BUFFER_LEN - header_len ||
++	    (msg_cmd->msg_len && !msg_cmd->msg))
++		return WARP_INVALID_LENGTH_STATUS;
++	sendmsg_len = header_len + msg_cmd->msg_len;
+ 	int result;
+ 
+ 	u8 sendmsg_buf[WARP_MSG_MAX_BUFFER_LEN];
+@@ -540,111 +488,72 @@
+ 	return result;
+ }
+ 
+-static int warp_msg_wait_rsp(
+-	struct warp_msg_cmd *msg_cmd, struct warp_msg_wait_node *node) {
+-
+-	int timeout, ret = WARP_OK_STATUS;
+-
+-	if (node != NULL && check_if_warp_msg_need_wait(msg_cmd->param.wait_type)) {
+-
+-		// wait
+-		timeout = (msg_cmd->param.timeout > 0) ?
+-			msg_cmd->param.timeout : WARP_MSG_TIMEOUT_DEFAULT;
+-
+-		if (wait_for_completion_timeout(
+-			&node->recv_done, msecs_to_jiffies(timeout)) == 0) {
+-
+-			warp_dbg(WARP_DBG_ERR, "%s(), uni_id:%d(cmd_id:%d), timeout\n", __func__, node->uni_id, node->cmd_id);
 -			return -1;
-+			return -ETIMEDOUT;
- 		}
+-		}
+-
+-		warp_dbg(WARP_DBG_INF, "%s(), rsp_status:%d\n", __func__, node->rsp_status);
+-
+-		// handle output
+-		ret = node->rsp_status;
+-
+-		if (msg_cmd->param.wait_type == WARP_MSG_WAIT_TYPE_RSP_MSG) {
+-
+-			if (msg_cmd->rsp_msg_len == node->rsp_msg_len &&
+-				msg_cmd->rsp_msg != NULL && node->rsp_msg != NULL) {
+-
+-				memcpy(msg_cmd->rsp_msg, node->rsp_msg, msg_cmd->rsp_msg_len);
+-
+-			} else {
+-				warp_dbg(WARP_DBG_ERR, "%s(): msg_cmd->rsp_msg_len:%d, entity->rsp_msg_len:%d\n",
+-				__func__, msg_cmd->rsp_msg_len, node->rsp_msg_len);
+-				ret = WARP_INVALID_LENGTH_STATUS;
+-			}
+-		}
+-	}
+-
++static int warp_msg_wait_rsp(struct warp_msg_cmd *msg_cmd,
++			     struct warp_msg_wait_node *node)
++{
++	u32 timeout = msg_cmd->param.timeout ?: WARP_MSG_TIMEOUT_DEFAULT;
++	int ret;
++
++	if (!wait_for_completion_timeout(&node->recv_done,
++					 msecs_to_jiffies(timeout)))
++		return -ETIMEDOUT;
++	/* complete() publishes only private node data. It never grants a
++	 * responder access to the sender's stack, user_data or output buffer.
++	 */
++	ret = node->rsp_status;
++	if (ret != WARP_OK_STATUS)
++		return ret;
++	if (msg_cmd->param.wait_type == WARP_MSG_WAIT_TYPE_RSP_MSG) {
++		if (msg_cmd->rsp_msg_len != node->rsp_msg_len ||
++		    (node->rsp_msg_len && (!msg_cmd->rsp_msg || !node->rsp_msg)))
++			return WARP_INVALID_LENGTH_STATUS;
++		if (node->rsp_msg_len)
++			memcpy(msg_cmd->rsp_msg, node->rsp_msg, node->rsp_msg_len);
++	}
++	/* A synchronous handler executes in the sending process, before return.
++	 * Timeout/send failure can therefore drop the sender reference at once.
++	 */
++	if (msg_cmd->param.rsp_hdlr)
++		msg_cmd->param.rsp_hdlr((char *)node->rsp_msg, node->rsp_msg_len,
++					msg_cmd->param.user_data);
+ 	return ret;
+ }
  
- 		warp_dbg(WARP_DBG_INF, "%s(), rsp_status:%d\n", __func__, node->rsp_status);
+-
+-void warp_msg_handle_rsp(u8 wed_idx, u8 from_id, unsigned char *msg, u32 msg_len) {
+-
+-
++void warp_msg_handle_rsp(u8 wed_idx, u8 from_id, unsigned char *msg, u32 msg_len)
++{
+ 	struct warp_msg_wait_queue *wait_queue;
+ 	struct warp_msg_wait_node *node;
+-	struct warp_cmd_header *hdr = (struct warp_cmd_header *)msg;
+-
+-	int rsp_msg_len = msg_len - sizeof(struct warp_cmd_header);
+-	unsigned char *rsp_msg = (rsp_msg_len > 0) ?
+-		msg + sizeof(struct warp_cmd_header) : NULL;
+-
++	struct warp_cmd_header *hdr;
++	u32 payload_len;
++
++	if (!msg || msg_len < sizeof(*hdr) || msg_len > WARP_MSG_MAX_BUFFER_LEN)
++		return;
++	hdr = (struct warp_cmd_header *)msg;
++	if (hdr->length != msg_len)
++		return;
+ 	wait_queue = get_warp_msg_wait_queue(from_id, wed_idx);
+-
+-	if (!wait_queue) {
+-		warp_dbg(WARP_DBG_ERR, "%s(): get wait_queue fail!\n", __func__);
++	if (!wait_queue)
+ 		return;
+-	}
+-
+-	if (wait_queue->state != MSG_Q_INITED) {
+-
+-		warp_dbg(WARP_DBG_ERR, "%s(): queue state isn't inited\n", __func__);
++	node = warp_msg_get_wait_node_by_uni_id(wait_queue, hdr->uni_id);
++	if (!node)
+ 		return;
+-	}
+-
+-	node = warp_msg_get_wait_node_by_uni_id(wait_queue, hdr->uni_id);
+-
+-	if (node == NULL) {
+-		warp_dbg(WARP_DBG_ERR, "%s(): uni_id:%d, node is not found\n", __func__, hdr->uni_id);
+-		return;
+-	}
+-
+-	// call response handler
+-	if (node->rsp_hdlr) {
+-
+-		node->rsp_hdlr(rsp_msg, rsp_msg_len, node->user_data);
+-	}
+-
+-	if (check_if_warp_msg_need_wait(node->wait_type)) {
+-
+-		node->rsp_status = hdr->status;
+-
+-		if (node->wait_type == WARP_MSG_WAIT_TYPE_RSP_MSG) {
+-
+-			if (rsp_msg_len == node->rsp_msg_len && node->rsp_msg != NULL) {
+-
+-				memcpy(node->rsp_msg, rsp_msg, rsp_msg_len);
+-
+-			} else {
+-				warp_dbg(WARP_DBG_ERR, "%s(): rsp_msg_len:%d, entity->rsp_msg_len:%d\n",
+-					__func__, rsp_msg_len, node->rsp_msg_len);
+-
+-				node->rsp_status = WARP_INVALID_LENGTH_STATUS;
+-			}
++	payload_len = msg_len - sizeof(*hdr);
++	node->rsp_status = hdr->status;
++	if (node->wait_type == WARP_MSG_WAIT_TYPE_RSP_MSG &&
++	    payload_len != node->expected_rsp_len) {
++		node->rsp_status = WARP_INVALID_LENGTH_STATUS;
++	} else if (node->copy_response && payload_len) {
++		warp_os_alloc_mem(&node->rsp_msg, payload_len, GFP_ATOMIC);
++		if (!node->rsp_msg) {
++			node->rsp_status = -ENOMEM;
++		} else {
++			memcpy(node->rsp_msg, msg + sizeof(*hdr), payload_len);
++			node->rsp_msg_len = payload_len;
+ 		}
+-
+-		complete(&node->recv_done);
+-
+-	} else {
+-
+-		// de-queue entity
+-		warp_msg_get_wait_node_by_uni_id(wait_queue, node->uni_id);
+-	}
+-
++	}
++	complete(&node->recv_done);
++	/* The sender may already have timed out and dropped its own reference. */
++	warp_msg_wait_node_put(node); /* response (transferred queue reference) */
+ }
+ 
+ static void warp_msg_wait_queue_init(u8 wed_idx) {
+@@ -667,28 +576,32 @@
+ }
+ 
+ 
+-static void warp_msg_wait_queue_deinit(u8 wed_idx) {
+-
+-	struct warp_msg_wait_queue *wait_queue = NULL;
++static void warp_msg_wait_queue_deinit(u8 wed_idx)
++{
+ 	int to_id;
+ 
+-	warp_dbg(WARP_DBG_INF, "%s(), wed_idx: %d\n", __func__, wed_idx);
+-
+-	for (to_id = 0; to_id < MAX_MODULE_ID; to_id ++){
+-		wait_queue = get_warp_msg_wait_queue(to_id, wed_idx);
+-
+-		if (!wait_queue)
++	for (to_id = 0; to_id < MAX_MODULE_ID; to_id++) {
++		struct warp_msg_wait_queue *q = get_warp_msg_wait_queue(to_id, wed_idx);
++		struct warp_msg_wait_node *node, *next;
++		if (!q)
+ 			continue;
+-
+-		// Remove each entity
+-		while (wait_queue->size > 0) {
+-			warp_msg_wait_node_deq(wait_queue, wait_queue->head);
++		spin_lock_bh(&q->wait_lock);
++		q->state = MSG_Q_UNKNOWN;
++		node = q->head;
++		q->head = NULL;
++		q->size = 0;
++		spin_unlock_bh(&q->wait_lock);
++		/* The detached list owns queue refs; every sender retains its own.
++		 * A response claimed earlier is independent and drops its own ref.
++		 */
++		while (node) {
++			next = node->next;
++			node->next = NULL;
++			node->rsp_status = -ESHUTDOWN;
++			complete(&node->recv_done);
++			warp_msg_wait_node_put(node);
++			node = next;
+ 		}
+-
+-		wait_queue->head = NULL;
+-		wait_queue->size = 0;
+-		wait_queue->current_uni_id = 0;
+-		wait_queue->state = MSG_Q_UNKNOWN;
+ 	}
+ }
+ 
+@@ -770,76 +683,56 @@
+ 
+ int warp_msg_send_cmd(u8 wed_idx, struct warp_msg_cmd *msg_cmd)
+ {
+-	struct warp_msg_wait_queue *wait_queue = NULL;
++	struct warp_msg_wait_queue *q;
+ 	struct warp_msg_wait_node *node = NULL;
+-	int ret = WARP_OK_STATUS;
+-
++	int ret;
+ 	u16 uni_id = 0;
+ 
+-	warp_dbg(WARP_DBG_INF, "%s(), wed_idx:%d, to: %d, cmd_id: %d, wait_type: %d, timeout: %d, msg_len: %d, rsp_msg_len: %d, rsp_hdlr: %s\n",
+-		__func__,
+-		wed_idx,
+-		msg_cmd->param.to_id,
+-		msg_cmd->param.cmd_id,
+-		msg_cmd->param.wait_type,
+-		msg_cmd->param.timeout,
+-		msg_cmd->msg_len,
+-		msg_cmd->rsp_msg_len,
+-		msg_cmd->param.rsp_hdlr == NULL ? "null" : "not null");
+-
+-	wait_queue = get_warp_msg_wait_queue(msg_cmd->param.to_id, wed_idx);
+-
+-	if (!wait_queue) {
+-		warp_dbg(WARP_DBG_ERR, "%s(): get wait_queue fail!\n", __func__);
+-		return WARP_FAIL_STATUS;
+-	}
+-
+-	if (wait_queue->state != MSG_Q_INITED) {
+-
+-		warp_dbg(WARP_DBG_OFF, "%s(): queue state isn't inited\n", __func__);
+-		return WARP_FAIL_STATUS;
+-	}
+-
+-	// before-send: add to entity queue
+-	if (check_if_warp_msg_need_rsp(msg_cmd)) {
+-
++	if (!msg_cmd || msg_cmd->param.wait_type > WARP_MSG_WAIT_TYPE_RSP_MSG ||
++	    msg_cmd->param.wait_type < WARP_MSG_WAIT_TYPE_NONE)
++		return -EINVAL;
++	/* No owner/release API exists for asynchronous callback user_data.
++	 * There are no such callers in the production WARP/proxy sources.
++	 */
++	if (msg_cmd->param.wait_type == WARP_MSG_WAIT_TYPE_NONE && msg_cmd->param.rsp_hdlr)
++		return -EOPNOTSUPP;
++	if (msg_cmd->rsp_msg_len > WARP_MSG_MAX_BUFFER_LEN ||
++	    (msg_cmd->param.wait_type == WARP_MSG_WAIT_TYPE_RSP_MSG &&
++	     msg_cmd->rsp_msg_len && !msg_cmd->rsp_msg))
++		return -EINVAL;
++	q = get_warp_msg_wait_queue(msg_cmd->param.to_id, wed_idx);
++	if (!q)
++		return -ENODEV;
++	if (check_if_warp_msg_need_wait(msg_cmd->param.wait_type)) {
+ 		node = warp_msg_wait_node_init(msg_cmd);
+-		if (!node) {
+-			ret = WARP_NULL_POINTER_STATUS;
+-			goto end;
+-		}
+-		uni_id = warp_msg_wait_node_enq(wait_queue, node);
+-	}
+-
++		if (!node)
++			return -ENOMEM;
++		ret = warp_msg_wait_node_enq(q, node);
++		if (ret < 0)
++			goto out;
++		uni_id = ret;
++	} else {
++		spin_lock_bh(&q->wait_lock);
++		ret = q->state == MSG_Q_INITED ? 0 : -ESHUTDOWN;
++		spin_unlock_bh(&q->wait_lock);
++		if (ret)
++			return ret;
++	}
+ 	ret = warp_msg_send_cmd_with_header(wed_idx, msg_cmd, uni_id);
+-
+-	if (ret != WARP_OK_STATUS) {
+-		warp_dbg(WARP_DBG_OFF, "%s(): cmd_id:%d send failed!\n",
+-				 __func__, msg_cmd->param.cmd_id);
+-
+-		if (uni_id)
+-			warp_msg_get_wait_node_by_uni_id(wait_queue, uni_id);
+-
+-		warp_msg_wait_node_deinit(node);
+-
+-		goto end;
+-	}
+-
+-	if (uni_id) {
+-		// wait and get response.
++	if (ret != WARP_OK_STATUS)
++		goto cancel;
++	if (node) {
+ 		ret = warp_msg_wait_rsp(msg_cmd, node);
+-
+-		if (ret < 0) {//cmd timeout
+-			warp_msg_get_wait_node_by_uni_id(wait_queue, uni_id);
+-		}
+-
+-		warp_msg_wait_node_deinit(node);
+-	}
+-
+-end:
+-
++		if (ret != WARP_OK_STATUS)
++			goto cancel;
++	}
++	goto out;
++cancel:
++	if (node)
++		warp_msg_wait_cancel(q, node);
++out:
++	warp_msg_wait_node_put(node); /* sender; never frees a responder's ref */
+ 	return ret;
+-
+ }
+ EXPORT_SYMBOL(warp_msg_send_cmd);
+ 
+--- a/mcu/warp_msg.h
++++ b/mcu/warp_msg.h
+@@ -19,6 +19,7 @@
+ 
+ #include "warp_utility.h"
+ #include <linux/kthread.h>
++#include <linux/refcount.h>
+ #include "warp_evt.h"
+ 
+ #define WARP_MSG_TIMEOUT_DEFAULT 3000  /* millisecond */
+@@ -54,17 +55,19 @@
+ };
+ 
+ struct warp_msg_wait_node {
+-	/* input */
+-	u8 cmd_id;    /* for debug */
++	/* The sender owns one reference. Enqueue adds one queue reference;
++	 * dequeue transfers that reference to the response processor.
++	 * No caller callback, user_data or output buffer is retained here.
++	 */
++	refcount_t refs;
++	u8 cmd_id;
+ 	u16 uni_id;
+ 	enum warp_msg_wait_type wait_type;
+ 	struct completion recv_done;
+-	RSP_MSG_HANDLER rsp_hdlr;
+-	void *user_data;
+-
+-	/* output */
+-	unsigned char *rsp_msg;     /* rsp message*/
+-	u32 rsp_msg_len;            /* rsp message length*/
++	bool copy_response;
++	u32 expected_rsp_len;
++	unsigned char *rsp_msg; /* node-owned copy, released with the last ref */
++	u32 rsp_msg_len;
+ 	int rsp_status;
+ 	struct warp_msg_wait_node *next;
+ };
+@@ -99,6 +102,9 @@
+ 	enum warp_msg_wait_type wait_type;
+ 	u32 timeout;           /* if 0, default: 3000ms */
+ 
++	/* Synchronous only: invoked by the waiting sender before it returns.
++	 * NONE + rsp_hdlr is unsupported: this API cannot own async user_data.
++	 */
+ 	RSP_MSG_HANDLER rsp_hdlr;
+ 	void *user_data;
+ };
 --- a/mcu/warp_wo.c
 +++ b/mcu/warp_wo.c
 @@ -20,6 +20,10 @@

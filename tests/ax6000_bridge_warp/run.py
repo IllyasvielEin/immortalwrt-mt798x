@@ -56,3 +56,6 @@ with tempfile.TemporaryDirectory(prefix='ax6000-warp-') as directory:
                    env={**os.environ, 'ASAN_OPTIONS': 'detect_leaks=0', 'UBSAN_OPTIONS': 'halt_on_error=1'})
 
 subprocess.run([sys.executable, str(Path(__file__).with_name('test_proxy.py'))], check=True)
+
+# Whole production message queue and deterministic timeout/response lifetimes.
+subprocess.run([__import__("sys").executable, str(Path(__file__).with_name("test_msg.py"))], check=True)
