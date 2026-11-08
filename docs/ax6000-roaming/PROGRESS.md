@@ -4,11 +4,23 @@
 
 ## 当前状态
 
-Astra 实际实现审查 **NO-GO**，见 [实现审查报告](roaming-bridge-implementation-astra-review.md)。首轮实现 HEAD `692a32bd` 的本地集成验证完成，但审查找到两个未覆盖的 P1：WO 超时/应答节点所有权、无变更网络 reload 的 AP 事务收尾；正在修复并增加完整路径回归。尚未通过实现复审、完整 CI 或硬件/性能验收，未推送、触发 CI、操作路由器或刷机。r3.1 原设计 GO 继续只作为实现预期。
+Astra 首轮实际实现审查 **NO-GO**，见 [实现审查报告](roaming-bridge-implementation-astra-review.md)。该报告针对首轮实现 `692a32bd`；两项 P1 与一项 P3 已完成修正、针对性回归及受影响模块编译，修正 HEAD `34de212a`，等待独立复审。NO-GO 仍是当前最后一份独立实现审查结论。尚未通过实现复审、完整 CI 或硬件/性能验收，未推送、触发 CI、操作路由器或刷机。r3.1 原设计 GO 继续只作为实现预期。
 
 第一次 Astra 实现审核被平台以“possible cybersecurity risk”过滤中止，未产出技术审查结论。该执行失败不代表代码 GO 或 NO-GO；仍保留审核通过后才推送编译的顺序。重提审核聚焦同一代码范围的路由器转发、资源生命周期、配置和编译正确性，不改变审查标准。
 
 重提审核已完成，除了上述 P1，还发现 `fq_en` 的 BOOLEAN-style setter 返回负 errno 被 ioctl 分派当作成功（P3）。本轮一并改为 FALSE，并通过真实注册项与 ioctl 分派验证调用返回错误；原实现对同一回归失败，修正后通过。
+
+## 实现审查修正
+
+- `0aae3209`（P1-1）：消息节点分别由发送方、队列/已认领的响应方持有引用；超时只撤销仍在队列的节点，不释放响应方引用。响应只写节点私有缓冲，输出复制和同步回调在成功等待的发送线程返回前执行，避免迟到响应接触调用者栈或缓冲。发送失败、队列退出、payload 分配失败都按相同所有权处理，等待仍有界。`WAIT_NONE` 无回调保留；已检查 external WARP 与生产 proxy 调用者未使用 `WAIT_NONE+handler`，该无生命周期契约组合明确返回 `-EOPNOTSUPP`，不承诺其他树外调用者兼容。
+- `f51369f5`（P1-2）：CPU profile 的 `config_init_all()` 建立一次同步 reload 批次，仅登记本轮 PREPARE、原先 committed 且不受无线 controlled 事务管理的实际 AP owner。所有设备/成员/VLAN/配置阶段结束后才安排完整快照与 COMMIT；批内任何相关失败保持阻流和错误，不由旧 timer 擅自清除。修正配置后的下一次相关 reload 重新 PREPARE。没有 mode 文件时不启用批次、不改变旧产品返回语义。
+- `34de212a`（P3）：`fq_en` 返回 FALSE，由原有 BOOLEAN-style ioctl dispatcher 转为错误；真实注册项和完整 `RTMPAPPrivIoctlSet()` 路径回归覆盖，不再只断言叶节点 errno。
+
+修正版使用完整真实 `warp_msg.c/h` 的确定性线程交错回归通过；同一交错在旧 postimage 捕获 `warp_msg_handle_rsp:617` 的 ASan UAF，见 `.analysis/msg-old-regression.log`。旧源码保留在 `.analysis/warp-before-p1-1`；新测试还覆盖超时先摘队、发送失败时响应已认领、队列退出、payload OOM、同步回调线程与 caller 缓冲寿命。host 适配器不等于真实内核调度。
+
+真实 netifd/UCI 整体 reload 回归在旧 postimage 稳定复现永久 BLOCKED，修正版通过无变更、多 BSS/实际 VLAN、simple AP `NO_CHANGE`、成员删除失败与修正重试、未触及独立 AP 和 controlled 无线场景。旧/新记录为 `.analysis/netifd-reload-before-p1-2-test.log`、`.analysis/netifd-review-fix-tests.log`。`uv run --no-project tests/ax6000_bridge_control/run_netifd_reload.py` 链接本地锁定 native 对象和真实 UCI，仅替换外部 system/ubus/driver 边界；缺依赖明确报错，不能算跳过后通过。该完整集成测试仍独立本地执行；当前 CI 的 12 项控制测试内已补真实批次函数回归，不宣称 CI 运行了完整 native reload。
+
+修正版 WARP 与 D/proxy ARM64 modules/MODPOST、native netifd 编译通过；六个新生产补丁重新 fuzz=0 重放且 postimage 零差异。记录见 `.analysis/warp-review-fix-build.log`、`driver-review-fix-build.log`、`production-patch-review-fix-replay.log`；WARP、driver、全部 20 项控制及完整 native reload 针对性回归均通过，见各 `*-review-fix-tests.log`。vendor 既有警告和最终 CI/硬件限制继续保留。
 
 - worktree：`/home/illya/workspace/router/ax6000/worktrees/bridge-forwarding`
 - branch：`fix/ax6000-bridge-forwarding`
@@ -48,6 +60,6 @@ Astra 实际实现审查 **NO-GO**，见 [实现审查报告](roaming-bridge-imp
 
 ## 下一验收顺序
 
-已完成首轮源码接线、生产补丁生成、本地集成编译和上述 helper 验证。下一步：修复本轮两项 P1 和 P3 → 真正消息并发与网络 reload 路径回归 → 重生成/重放受影响生产补丁及增量编译 → Astra 复审 → 通过后推送隔离分支并触发一版 CI。完整固件、硬件 DMA/WO/复位、任意终端漫游、隔离/VLAN/聚合、eQoS 和性能验收仍未完成；宿主适配测试不能证明真实 Linux RCU 调度或目标硅片行为。
+已完成两项 P1 和 P3 修正、真正消息并发/网络 reload 路径回归、生产补丁重放及受影响模块增量编译。下一步：Astra 复审 → 修复新阻断（如有）→ 通过后推送隔离分支并触发一版 CI。完整固件、硬件 DMA/WO/复位、任意终端漫游、隔离/VLAN/聚合、eQoS 和性能验收仍未完成；宿主适配测试不能证明真实 Linux RCU 调度或目标硅片行为。
 
 不持续轮询 CI，等用户通知编译完成。不自动刷机或发布正式 Release。后续实机验证需先只读确认重启后的状态，不沿用重启前的关联表/FDB；历史证据保留在 `ax6000/research/evidence`。
