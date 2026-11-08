@@ -11,7 +11,7 @@
  FIND_LIBRARY(ubox NAMES ubox)
 --- /dev/null
 +++ b/ap-bridge.c
-@@ -0,0 +1,306 @@
+@@ -0,0 +1,370 @@
 +/* SPDX-License-Identifier: GPL-2.0-only */
 +#include <errno.h>
 +#include <fcntl.h>
@@ -29,10 +29,22 @@
 +	uint64_t owner, transaction;
 +	unsigned int ifindex;
 +	bool prepared, controlled, committed;
++	bool reload_touched, reload_pending;
 +	struct device *dev;
 +	struct uloop_timeout retry;
 +	int error;
 +};
++
++/* A network reload mutates several bridges/VLANs synchronously. Automatic
++ * COMMIT is permitted only after the entire batch has completed. */
++static bool ap_reload_active;
++static int ap_reload_error;
++
++void ap_bridge_config_error(int error)
++{
++	if (ap_reload_active && error && !ap_reload_error)
++		ap_reload_error = error < 0 ? error : -EIO;
++}
 +
 +static bool cpu_profile(void)
 +{
@@ -126,6 +138,15 @@
 +			return -ENOMEM;
 +	}
 +	owner->ap_bridge->dev = owner;
++	if (ap_reload_active && owner->ap_bridge->committed &&
++	    !owner->ap_bridge->controlled && !owner->ap_bridge->reload_touched) {
++		/* A corrected reload is a fresh attempt, never an old staged snapshot. */
++		owner->ap_bridge->reload_touched = true;
++		owner->ap_bridge->reload_pending = true;
++		owner->ap_bridge->prepared = false;
++		owner->ap_bridge->error = 0;
++		uloop_timeout_cancel(&owner->ap_bridge->retry);
++	}
 +	if (owner->ap_bridge->prepared &&
 +	    (!if_nametoindex(owner->ifname) ||
 +	     owner->ap_bridge->ifindex == if_nametoindex(owner->ifname)))
@@ -134,6 +155,7 @@
 +	/* Recover from an ambiguous negative result with GET + fresh PREPARE. */
 +	if (ret)
 +		ret = ap_confirm_block(owner, false);
++	ap_bridge_config_error(ret);
 +	return ret;
 +}
 +
@@ -233,7 +255,10 @@
 +			ret = -EPROTO;
 +	}
 +	s->prepared = false;
-+	if (!ret) { s->committed = true; s->controlled = false; }
++	if (!ret) {
++		s->committed = true; s->controlled = false;
++		s->reload_pending = false;
++	}
 +	if (ret) {
 +		int blocked = ap_confirm_block(owner, false);
 +		if (blocked)
@@ -294,6 +319,7 @@
 +void ap_bridge_fault(struct device *dev, int error)
 +{
 +	struct device *owner = ap_bridge_owner(dev);
++	ap_bridge_config_error(error);
 +	if (error && owner && owner->ap_bridge)
 +		owner->ap_bridge->error = error < 0 ? error : -EIO;
 +}
@@ -301,7 +327,8 @@
 +static void ap_retry(struct uloop_timeout *t)
 +{
 +	struct ap_bridge_state *s = container_of(t, struct ap_bridge_state, retry);
-+	if (s->controlled || !s->committed) return;
++	if (ap_reload_active || s->controlled || !s->committed ||
++	    (s->reload_pending && s->error)) return;
 +	/* New complete attempt, never reuse a failed staged snapshot. */
 +	s->prepared = false;
 +	s->error = 0;
@@ -312,11 +339,48 @@
 +void ap_bridge_reconcile(struct device *dev)
 +{
 +	struct device *owner = ap_bridge_owner(dev);
-+	if (owner && owner->ap_bridge && owner->ap_bridge->committed &&
-+	    !owner->ap_bridge->controlled) {
++	if (!ap_reload_active && owner && owner->ap_bridge &&
++	    owner->ap_bridge->committed && !owner->ap_bridge->controlled &&
++	    !(owner->ap_bridge->reload_pending && owner->ap_bridge->error)) {
 +		owner->ap_bridge->retry.cb = ap_retry;
 +		uloop_timeout_set(&owner->ap_bridge->retry, 10);
 +	}
++}
++
++static void ap_reload_begin_owner(struct device *dev, void *arg)
++{
++	(void)arg;
++	if (dev->ap_bridge)
++		dev->ap_bridge->reload_touched = false;
++}
++
++void ap_bridge_config_begin(void)
++{
++	ap_reload_active = cpu_profile();
++	ap_reload_error = 0;
++	if (ap_reload_active)
++		device_foreach(ap_reload_begin_owner, NULL);
++}
++
++static void ap_reload_finish_owner(struct device *dev, void *arg)
++{
++	struct ap_bridge_state *s = dev->ap_bridge;
++	(void)arg;
++	if (!s || !s->reload_touched || s->controlled || !s->committed)
++		return;
++	if (ap_reload_error && !s->error)
++		s->error = ap_reload_error;
++	if (!s->error)
++		ap_bridge_reconcile(dev);
++}
++
++int ap_bridge_config_end(void)
++{
++	bool active = ap_reload_active;
++	ap_reload_active = false;
++	if (active)
++		device_foreach(ap_reload_finish_owner, NULL);
++	return ap_reload_error;
 +}
 --- a/bridge.c
 +++ b/bridge.c
@@ -713,6 +777,67 @@
 +	device_foreach(bridge_ap_find, &c);
 +	return c.error;
 +}
+--- a/config.c
++++ b/config.c
+@@ -126,6 +126,7 @@
+ 	config_fixup_bridge_vlan_filtering(s, name);
+ 	uci_to_blob(&b, s, devtype->config_params);
+ 	if (!device_create(name, devtype, b.head)) {
++		ap_bridge_config_error(-EIO);
+ 		D(INTERFACE, "Failed to create '%s' device for interface '%s'",
+ 			devtype->name, s->e.name);
+ 	}
+@@ -263,13 +264,22 @@
+ 		dev = device_create(name, devtype, config);
+ 	} else {
+ 		dev = device_get(name, 1);
+-		if (!dev)
++		if (!dev) {
++			ap_bridge_config_error(-EIO);
+ 			return;
++		}
+ 
+ 		dev->current_config = true;
+-		device_apply_config(dev, dev->type, config);
+-	}
+-
++		if (device_apply_config(dev, dev->type, config) == DEV_CONFIG_FAILED) {
++			ap_bridge_config_error(-EIO);
++			return;
++		}
++	}
++
++	if (!dev) {
++		ap_bridge_config_error(-EIO);
++		return;
++	}
+ 	dev->default_config = false;
+ }
+ 
+@@ -339,6 +349,7 @@
+ 	}
+ 
+ 	dev = device_create(name, devtype, data);
++	if (!dev) ap_bridge_config_error(-EIO);
+ 	if (!dev || !dev->vlans.update || !len)
+ 		return;
+ 
+@@ -797,6 +808,7 @@
+ 		return -1;
+ 	}
+ 
++	ap_bridge_config_begin();
+ 	config_init_board();
+ 
+ 	vlist_update(&interfaces);
+@@ -821,6 +833,7 @@
+ 	interface_refresh_assignments(false);
+ 	interface_start_pending();
+ 	netifd_ucode_config_load(true);
++	ret = ap_bridge_config_end();
+ 
+ 	return ret;
+ }
 --- a/device.c
 +++ b/device.c
 @@ -1083,8 +1083,15 @@
@@ -950,7 +1075,7 @@
  	bool wireless;
  	bool wireless_ap;
  	bool wireless_proxyarp;
-@@ -367,6 +383,19 @@
+@@ -367,6 +383,22 @@
  
  void device_add_user(struct device_user *dep, struct device *dev);
  void device_remove_user(struct device_user *dep);
@@ -958,6 +1083,9 @@
 +void device_foreach(void (*cb)(struct device *, void *), void *arg);
 +struct device *ap_bridge_owner(struct device *dev);
 +int device_prepare_change(struct device *dev, bool remove);
++void ap_bridge_config_begin(void);
++int ap_bridge_config_end(void);
++void ap_bridge_config_error(int error);
 +int ap_bridge_prepare(struct device *dev);
 +int ap_bridge_prepare_new(struct device *dev);
 +void ap_bridge_fault(struct device *dev, int error);
