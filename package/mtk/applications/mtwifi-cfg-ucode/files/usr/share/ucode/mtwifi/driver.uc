@@ -45,17 +45,17 @@ export function wait_for_iface(ifname) {
 // set vif up
 export function ifup(ifname) {
 	if (wait_for_iface(ifname)) {
-		system(`ifconfig ${ifname} up`);
+		if (!match(ifname, /^[A-Za-z0-9_.:-]{1,15}$/) || system(`ifconfig ${ifname} up`) != 0) die(`[Driver] ifup failed: ${ifname}`);
 		log.notice(`[Driver] ifconfig up ${ifname}`);
-	}
+	} else die(`[Driver] missing interface ${ifname}`);
 };
 
 // set vif down
 export function ifdown(ifname) {
 	if (wait_for_iface(ifname)) {
-		system(`ifconfig ${ifname} down`);
+		if (!match(ifname, /^[A-Za-z0-9_.:-]{1,15}$/) || system(`ifconfig ${ifname} down`) != 0) die(`[Driver] ifdown failed: ${ifname}`);
 		log.notice(`[Driver] ifconfig down ${ifname}`);
-	}
+	} else die(`[Driver] missing interface ${ifname}`);
 };
 
 // get port status
@@ -136,13 +136,13 @@ export function is_kmod() {
 // hard reset driver modules
 export function reload() {	
 	// uninstall
-	for (let drv in DRIVERS) system(`rmmod ${drv}`);
+	for (let drv in DRIVERS) if (system(`rmmod ${drv}`) != 0) die(`[Driver] rmmod failed: ${drv}`);
 	log.notice("[Driver] Removing Kernel Modules...");
 
 	sleep(2000);
 
 	// install
-	for (let drv in reverse(DRIVERS)) system(`modprobe ${drv}`);
+	for (let drv in reverse(DRIVERS)) if (system(`modprobe ${drv}`) != 0) die(`[Driver] modprobe failed: ${drv}`);
 	log.notice("[Driver] Installing Kernel Modules...");
 
 	sleep(1000);

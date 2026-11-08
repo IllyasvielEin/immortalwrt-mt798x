@@ -23,6 +23,13 @@ UP_QID_BASE=1
 DL_QID_BASE=32
 QUEUE_SLOTS=31
 TC_SLOT_MAX=65535
+CPU_ONLY=0
+HTB_PARENT="1:1"
+if [ "$(cat /usr/share/ax6000/forwarding-mode 2>/dev/null)" = "cpu-only" ]; then
+	CPU_ONLY=1
+	HTB_PARENT="1:fffe"
+	TC_SLOT_MAX=65533
+fi
 PPD_QID=63
 MANAGED_QID_LAST=62
 DEFAULT_QUEUE_CFG="0 0 0 0 0 0 4"
@@ -108,6 +115,14 @@ stop_qos() {
 	ip link del dev "$IFB_DEV" 2>/dev/null
 }
 
+add_htb_root() {
+	if [ "$CPU_ONLY" -eq 1 ]; then
+		tc qdisc add dev "$1" root handle 1: htb default ffff
+	else
+		tc qdisc add dev "$1" root handle 1: htb
+	fi
+}
+
 start_qos() {
 	local dev="$1"
 	local dl="$2"
@@ -132,17 +147,24 @@ start_qos() {
 	ip link add "$IFB_DEV" type ifb || return 1
 
 	if ! ip link set dev "$IFB_DEV" up ||
-	   ! tc qdisc add dev "$dev" root handle 1: htb ||
-	   ! tc class add dev "$dev" parent 1: classid 1:1 htb rate "${dl}mbit" ||
-	   ! tc qdisc add dev "$IFB_DEV" root handle 1: htb ||
-	   ! tc class add dev "$IFB_DEV" parent 1: classid 1:1 htb rate "${up}mbit" ||
+	   ! add_htb_root "$dev" ||
+	   ! tc class add dev "$dev" parent 1: classid "$HTB_PARENT" htb rate "${dl}mbit" ceil "${dl}mbit" ||
+	   ! add_htb_root "$IFB_DEV" ||
+	   ! tc class add dev "$IFB_DEV" parent 1: classid "$HTB_PARENT" htb rate "${up}mbit" ceil "${up}mbit" ||
 	   ! tc qdisc add dev "$dev" ingress ||
-	   ! tc filter add dev "$dev" parent ffff: protocol ip pref 1 u32 \
+	   ! tc filter add dev "$dev" parent ffff: protocol ip pref 1 u32 skip_hw \
 		match u32 0 0 action mirred egress redirect dev "$IFB_DEV" ||
-	   ! tc filter add dev "$dev" parent ffff: protocol ipv6 pref 2 u32 \
+	   ! tc filter add dev "$dev" parent ffff: protocol ipv6 pref 2 u32 skip_hw \
 		match u32 0 0 action mirred egress redirect dev "$IFB_DEV"; then
 		stop_qos "$dev"
 		return 1
+	fi
+	if [ "$CPU_ONLY" -eq 1 ]; then
+		if ! tc class add dev "$dev" parent "$HTB_PARENT" classid 1:ffff htb rate "${dl}mbit" ceil "${dl}mbit" ||
+		   ! tc class add dev "$IFB_DEV" parent "$HTB_PARENT" classid 1:ffff htb rate "${up}mbit" ceil "${up}mbit"; then
+			stop_qos "$dev"
+			return 1
+		fi
 	fi
 }
 
@@ -315,11 +337,11 @@ tc_filter_rule() {
 
 	case "$family" in
 		ip)
-			tc filter add dev "$tcdev" parent 1: protocol ip pref "$pref" u32 \
+			tc filter add dev "$tcdev" parent 1: protocol ip pref "$pref" u32 skip_hw \
 				match ip "$key" "$value" flowid "1:$classid"
 			;;
 		ip6)
-			tc filter add dev "$tcdev" parent 1: protocol ipv6 pref "$pref" u32 \
+			tc filter add dev "$tcdev" parent 1: protocol ipv6 pref "$pref" u32 skip_hw \
 				match ip6 "$key" "$value" flowid "1:$classid"
 			;;
 		*)
@@ -348,7 +370,7 @@ program_tc_queue() {
 	esac
 
 	classid="$(tc_classid_from_slot "$slot")"
-	tc class replace dev "$tcdev" parent 1:1 classid "1:$classid" \
+	tc class replace dev "$tcdev" parent "$HTB_PARENT" classid "1:$classid" \
 		htb rate "${rate}kbit" ceil "${rate}kbit" || return 1
 	tc_filter_rule "$dir" ip "$ip4" "$slot" "$classid" "$dev" || return 1
 	tc_filter_rule "$dir" ip6 "$ip6" "$slot" "$classid" "$dev" || return 1
@@ -455,6 +477,13 @@ add_rule() {
 
 	[ "$dl" -ne 0 ] || [ "$up" -ne 0 ] || return 0
 
+	if [ "$CPU_ONLY" -eq 1 ]; then
+		ensure_tc_qos "$dev" "$total_dl" "$total_up" || return 1
+		program_tc_queue up "$slot" "$up" "$ip4" "$ip6" "$dev" || return 1
+		program_tc_queue dl "$slot" "$dl" "$ip4" "$ip6" "$dev"
+		return $?
+	fi
+
 	need_nft
 	need_qdma_layout
 
@@ -528,6 +557,13 @@ start_all() {
 	[ "$dl" -le "$TOTAL_RATE_MAX" ] && [ "$up" -le "$TOTAL_RATE_MAX" ] ||
 		die "total rate must not exceed $TOTAL_RATE_MAX Mbit/s"
 
+	if [ "$CPU_ONLY" -eq 1 ]; then
+		stop_qos "$dev"
+		[ ! -x "$NFT" ] || nft_stop
+		start_qos "$dev" "$dl" "$up" || die "failed to configure software shaping"
+		return 0
+	fi
+
 	need_qdma_layout
 	stop_qos "$dev"
 	nft_stop
@@ -539,6 +575,10 @@ stop_all() {
 	local dev="$DEV_DEFAULT"
 
 	stop_qos "$dev"
+	if [ "$CPU_ONLY" -eq 1 ]; then
+		[ ! -x "$NFT" ] || nft_stop
+		return 0
+	fi
 	nft_stop
 	stop_hnat_qos
 }
@@ -555,7 +595,9 @@ Commands:
 
 Run enable once after all add commands.
 
-Queue slots 1-31 use the common NETSYS V2/V3 64-QDMA layout. EQoS keeps
+In the fixed cpu-only profile, slots 1-65533 all use software HTB/IFB;
+1:fffe is the aggregate class and 1:ffff is the default leaf.
+Other products: queue slots 1-31 use the common NETSYS V2/V3 64-QDMA layout. EQoS keeps
 qid0 as the default unclassified queue, uses qid1-31 for upload and
 qid32-62 for download, and keeps qid63 free for the PPD path. Slots 32
 and above use tc software shaping with an IPv4 or IPv6 selector.
@@ -577,7 +619,11 @@ case "$1" in
 		;;
 	enable)
 		shift
-		enable_hnat "$@"
+		if [ "$CPU_ONLY" -eq 1 ]; then
+			ensure_tc_qos "$DEV_DEFAULT" || die "software shaping is not ready"
+		else
+			enable_hnat "$@"
+		fi
 		;;
 	*)
 		usage

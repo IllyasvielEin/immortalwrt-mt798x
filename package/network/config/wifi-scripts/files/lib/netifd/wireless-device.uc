@@ -2,12 +2,14 @@
 import * as ubus from "ubus";
 import * as uloop from "uloop";
 import { is_equal } from "./utils.uc";
-import { access } from "fs";
+import { access, readfile } from "fs";
+const AP_CPU_PROFILE = readfile("/usr/share/ax6000/forwarding-mode") == "cpu-only\n";
 
 const NOTIFY_CMD_UP = 0;
 const NOTIFY_CMD_SET_DATA = 1;
 const NOTIFY_CMD_PROCESS_ADD = 2;
 const NOTIFY_CMD_SET_RETRY = 4;
+const NOTIFY_CMD_AP_PREPARE = 5;
 
 const DEFAULT_RETRY = 3;
 const DEFAULT_SCRIPT_TIMEOUT = 30 * 1000;
@@ -43,6 +45,17 @@ function delete_wdev(name)
 	gc();
 }
 
+function ap_block(wdev)
+{
+	if (!AP_CPU_PROFILE) return true;
+	for (let section, data in wdev.handler_data) {
+		if (!data.ifname || data.type != "vif" || data.config.mode != "ap") continue;
+		let res = netifd.ap_prepare(data.ifname);
+		if (!res?.ok) { wdev.dbg(`AP prepare failed ${data.ifname}: ${res}`); return false; }
+	}
+	return true;
+}
+
 function handle_link(dev, data, up)
 {
 	let config = data.config;
@@ -58,6 +71,11 @@ function handle_link(dev, data, up)
 		isolate: !!config.bridge_isolate,
 		wireless: true,
 		wireless_ap: ap,
+		wireless_bridge_forwarding: AP_CPU_PROFILE && ap,
+		wireless_proxyarp: ap && !!config.proxy_arp,
+		wireless_isolate: ap && !!config.isolate,
+		multicast_to_unicast: -1,
+		wireless_policy: (config.isolate ? 1 : 0) | (data.bridge_btnbssid ? 2 : 0),
 	};
 
 	if (ap && config.multicast_to_unicast != null)
@@ -68,17 +86,17 @@ function handle_link(dev, data, up)
 		dev_data.wireless_isolate = !!config.isolate;
 	}
 
-	if (up)
-		netifd.device_set(dev, dev_data);
+	if (up && !netifd.device_set(dev, dev_data)) return false;
 
 	for (let net in config.network)
-		netifd.interface_handle_link({
+		if (!netifd.interface_handle_link({
 			name: net,
 			ifname: dev,
 			vlan: config.network_vlan,
 			link_ext: true,
 			up,
-		});
+		})) return false;
+	return true;
 }
 
 function wdev_config_init(wdev)
@@ -160,9 +178,12 @@ function wdev_setup_cb(wdev)
 
 function wdev_teardown_cb(wdev)
 {
+	if (!ap_block(wdev)) { wdev.state = "fault"; return; }
 	for (let section, data in wdev.handler_data) {
-		if (data.ifname)
-			handle_link(data.ifname, data, false);
+		if (data.ifname && !handle_link(data.ifname, data, false)) {
+			wdev.state = "fault";
+			return;
+		}
 	}
 
 	wdev.handler_data = {};
@@ -298,7 +319,7 @@ function wdev_proc_add(wdev, data)
 
 function setup()
 {
-	if (this.state != "up" && this.state != "down")
+	if (this.state != "up" && this.state != "down" && this.state != "fault")
 		return;
 
 	this.dbg("setup, state=" + this.state);
@@ -319,6 +340,7 @@ function teardown()
 	if (this.state == "teardown" || this.state == "down")
 		return;
 
+	if (!ap_block(this)) { this.state = "fault"; return; }
 	wdev_proc_reset(this);
 	this.state = "teardown";
 	run_handler(this, "teardown", wdev_teardown_cb);
@@ -433,6 +455,7 @@ function stop()
 		this.cancel_setup = true;
 		break;
 	case "up":
+	case "fault":
 		this.teardown();
 		break;
 	}
@@ -453,9 +476,26 @@ function wdev_mark_up(wdev)
 	if (wdev.state != "setup")
 		return;
 
+	if (!ap_block(wdev)) { wdev.state = "fault"; return ubus.STATUS_UNKNOWN_ERROR; }
+	let btn = !!wdev.handler_data[wdev.name]?.bridge_btnbssid;
 	for (let section, data in wdev.handler_data) {
-		if (data.ifname)
-			handle_link(data.ifname, data, true);
+		if (!data.ifname) continue;
+		data.bridge_btnbssid = btn;
+		if (!handle_link(data.ifname, data, true)) {
+			ap_block(wdev);
+			wdev.state = "fault";
+			return ubus.STATUS_UNKNOWN_ERROR;
+		}
+	}
+	if (AP_CPU_PROFILE) {
+		for (let section, data in wdev.handler_data) {
+			if (!data.ifname || data.type != "vif" || data.config.mode != "ap") continue;
+			if (!netifd.ap_commit(data.ifname)?.ok) {
+				ap_block(wdev);
+				wdev.state = "fault";
+				return ubus.STATUS_UNKNOWN_ERROR;
+			}
+		}
 	}
 	wdev.state = "up";
 
@@ -509,6 +549,14 @@ function notify(req)
 	let data = req.args.data;
 
 	switch (req.args.command) {
+	case NOTIFY_CMD_AP_PREPARE:
+		if (!AP_CPU_PROFILE) return 0;
+		if (type(data?.ifnames) != "array") return ubus.STATUS_INVALID_ARGUMENT;
+		for (let ifname in data.ifnames) {
+			if (type(ifname) != "string" || !length(ifname)) return ubus.STATUS_INVALID_ARGUMENT;
+			if (!netifd.ap_prepare(ifname)?.ok) return ubus.STATUS_UNKNOWN_ERROR;
+		}
+		return 0;
 	case NOTIFY_CMD_UP:
 		if (vif || vlan || this.state != "setup")
 			return ubus.STATUS_INVALID_ARGUMENT;

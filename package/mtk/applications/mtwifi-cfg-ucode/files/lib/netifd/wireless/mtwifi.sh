@@ -199,6 +199,8 @@ function handle_setup(data) {
     for (let idx, iface_data in data.interfaces) {
         let config = iface_data.config;
         let mode = config.mode;
+        if (netifd.cpu_profile && (mode != "ap" && mode != "sta")) die(`[Setup] Unsupported role: ${mode}`);
+        if (netifd.cpu_profile && (length(iface_data.vlans) || length(iface_data.stas))) die("[Setup] Dynamic per-STA VLAN/station configuration is not supported");
         let calc_ifname = null;
 
         // AP mode handling

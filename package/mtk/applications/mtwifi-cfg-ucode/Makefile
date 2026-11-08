@@ -47,8 +47,16 @@ endef
 define Build/Compile
 endef
 
+ifeq ($(CONFIG_KERNEL_MTK_AP_BRIDGE),y)
+define Package/mtwifi-cfg-ucode/install-profile
+	$(INSTALL_DIR) $(1)/usr/share/ax6000
+	$(INSTALL_DATA) ./forwarding-mode $(1)/usr/share/ax6000/forwarding-mode
+endef
+endif
+
 define Package/mtwifi-cfg-ucode/install
 	$(CP) ./files/* $(1)/
+	$(call Package/mtwifi-cfg-ucode/install-profile,$(1))
 endef
 
 $(eval $(call BuildPackage,mtwifi-cfg-ucode))

@@ -1,5 +1,10 @@
 #!/bin/sh
 
+if [ "$(cat /usr/share/ax6000/forwarding-mode 2>/dev/null)" = "cpu-only" ]; then
+	echo "mtkhqos: hardware QoS is unavailable in the fixed CPU profile" >&2
+	exit 1
+fi
+
 . /lib/functions.sh
 
 hqos_path="/sys/kernel/debug/hnat"

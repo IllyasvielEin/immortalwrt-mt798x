@@ -3,6 +3,7 @@
 'require network';
 'require uci';
 'require view';
+'require fs';
 
 function collectHostChoices(hosts) {
 	var choices = {
@@ -85,17 +86,19 @@ return view.extend({
 	load: function() {
 		return Promise.all([
 			uci.load('eqos'),
-			network.getHostHints()
+			network.getHostHints(),
+			fs.read('/usr/share/ax6000/forwarding-mode').catch(function() { return ''; })
 		]);
 	},
 
 	render: function(data) {
 		var hosts = data[1] ? data[1].hosts || {} : {};
 		var hostChoices = collectHostChoices(hosts);
+		var cpuOnly = String(data[2] || '').trim() === 'cpu-only';
 		var m, s, o;
 
 		m = new form.Map('eqos', _('EQoS'),
-			_('Network speed control service for MediaTek HNAT.'));
+			cpuOnly ? _('Software bandwidth control.') : _('Network speed control service for MediaTek HNAT.'));
 
 		s = m.section(form.NamedSection, 'config', 'eqos', _('Settings'));
 		s.anonymous = true;
@@ -140,9 +143,9 @@ return view.extend({
 		o.rmempty = false;
 		o.editable = true;
 
-		o = s.taboption('general', form.Value, 'queue', _('Queue ID'),
-			_('Values 1-31 use HNAT HQoS. Values 32 and above use software shaping.'));
-		o.datatype = 'and(uinteger,min(1),max(65535))';
+		o = s.taboption('general', form.Value, 'queue', cpuOnly ? _('Rule ID') : _('Queue ID'),
+			cpuOnly ? _('All rules use software shaping; rule IDs range from 1 to 65533.') : _('Values 1-31 use HNAT HQoS. Values 32 and above use software shaping.'));
+		o.datatype = cpuOnly ? 'and(uinteger,min(1),max(65533))' : 'and(uinteger,min(1),max(65535))';
 		o.placeholder = '1';
 		o.rmempty = false;
 		o.cfgvalue = function(section_id) {

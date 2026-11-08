@@ -63,3 +63,12 @@ msgstr ""
 
 msgid "unspecified"
 msgstr ""
+
+msgid "Software bandwidth control."
+msgstr ""
+
+msgid "All rules use software shaping; rule IDs range from 1 to 65533."
+msgstr ""
+
+msgid "Rule ID"
+msgstr ""

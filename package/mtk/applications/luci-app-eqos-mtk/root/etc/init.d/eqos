@@ -6,6 +6,8 @@ USE_PROCD=1
 
 QDMA_RATE_MAX=1000000
 TOTAL_RATE_MAX=1000
+TC_SLOT_MAX=65535
+[ "$(cat /usr/share/ax6000/forwarding-mode 2>/dev/null)" != "cpu-only" ] || TC_SLOT_MAX=65533
 
 is_uinteger() {
 	case "$1" in
@@ -32,8 +34,8 @@ validate_device() {
 	config_get selector "$cfg" selector
 	[ -n "$queue" ] || config_get queue "$cfg" comment
 
-	if ! is_uinteger "$queue" || [ "$queue" -lt 1 ] || [ "$queue" -gt 65535 ]; then
-		echo "eqos: $cfg queue slot must be between 1 and 65535" >&2
+	if ! is_uinteger "$queue" || [ "$queue" -lt 1 ] || [ "$queue" -gt "$TC_SLOT_MAX" ]; then
+		echo "eqos: $cfg queue slot must be between 1 and $TC_SLOT_MAX" >&2
 		CONFIG_ERROR=1
 		return 0
 	fi
