@@ -2,7 +2,7 @@
 
 2026-11-09。最后一轮有限只读核验；未实施、联网、操作路由器或启动子代理。本文替代范围比较稿中“为省去SER框架而拒绝全部在线FE恢复”的建议，**不额外关闭在线FE L1 SER**。主方案选择仍由主线程/用户与Astra复审决定。
 
-结论：**可执行，不需要r3完整的拓扑epoch、动态backend列表、reset-id或最终N9 ACK。** 前提是固定CPU产品确实从不BIND、不发布HNAT资源型packet/control hooks、不运行HNAT维护work，FOE资源常驻且不换所有权。保留现有MT7986 L1物理恢复流程，只把固定profile恢复提前、检查失败并给现有等待增加有界失败出口。不能据此称现有匿名ACK与无限等待已正确。
+状态：r3 Astra 认可无需完整拓扑epoch/动态backend/reset-id/最终N9 ACK的收敛，但指出实际WARP STOP尚有P1。现按 r3.1 与 `bridge-r3-warp-stop-contract.md` 补齐：STOP必须为checked停流，不能沿用吞错后free的物理步骤。本文件仍未实施或独立放行。固定CPU从不BIND、不发布资源型HNAT hooks、不运行维护work、FOE常驻不换所有权的前提不变。
 
 ## 1. 本轮准确入口
 
@@ -28,11 +28,11 @@ callback只恢复同一分配的有效表地址/大小及固定SMA、默认CPU�
 ## 3. 最小正常顺序
 
 1. E worker取得RTNL，先拒sticky错误/重入；置ser_active、profile_ready=false，**之后**才dump/save/prepare或发通知。固定CPU的数据面从不建立/消费flow cache，另一个bridge link无需HNAT缓存屏障；它不必被误判成“内层事务”，本设计根本没有跨unlock的transaction depth。
-2. 在发送START前重置本轮stop completion和计数，清stop失败状态。目标所有在线Wi-Fi listener发一次START_RESET；实际事件广播仍沿netdevice notifier，使用MT7986支持的事件。结束本段RTNL操作，unlock等待STOP ACK，使用有界timeout；初始产品deadline可取5秒，最终值由真机验证。无Wi-Fi participant时不等。
+2. 在发送START前重置本轮stop completion和计数，清本轮未发生的stop失败状态（不清sticky fault）。目标所有实际需停硬件的Wi-Fi listener发一次START_RESET；probe ONLINE但未START_UP的对象不能直接忽略或假报成功，须确认无活动/初始化中的DMA或完成checked静止确认。事件沿原notifier，结束本段RTNL后有界等待。D在STOP ACK之前执行checked WARP QUIESCE，保留全部ring/buffer，不在STOP阶段做软件ring reset/free。只有必要engine停机已确认才成功ACK。deadline覆盖全部有界子步骤，5秒仅初值。
 3. E重取RTNL并核本轮没有失败/成员变化，才做现有第二次prepare、停止原running端口及FE reset。保留原必要硬件顺序；检查pinctrl/`mtk_hw_init(true)`的可返回错误。不是把软件profile标志当物理stop证明。
 4. **`mtk_hw_init`成功后，第一次`mtk_open`及任何Wi-Fi RESET_DONE之前**，同步调用registered restore。此时FOE仍为同一分配；全部检查成功后profile_ready=true，但ser_active仍保持。没有BIND资格需要另外“最终放行”。
 5. 检查每个需restart端口的`mtk_open`；它无条件选PDMA，禁止由offload_version/l4s等分支恢复PPE/私有旁路。任何一个端口失败都不得继续走成功通知。保持原有必要MAC/reset/QDMA收尾顺序，并核可检测错误。
-6. 只有所有必需端口和profile成功，才发一次FE RESET_DONE解开D等待；原NAT_DONE可保留为无副作用观测通知，不能调用旧warm。完成E必要收尾后清ser_active/MTK_RESETTING。D继续现有HIF/N9恢复；本固定profile不等待最终N9 ACK才恢复一项并不存在的BIND许可。
+6. 只有全部必需端口和profile成功才发FE RESET_DONE；NAT_DONE只观测、不warm。D醒来复核成功且未ABORT，再对已确认静止的旧ring执行一次原清理，然后HIF/BM重建；WO恢复和IRQ/DMA enable亦checked。错误不继续。E完成必要收尾清ser_active/MTK_RESETTING；不增加最后N9加速放行ACK。
 
 这里profile_ready只表示固定CPU硬件配置可用，**不表示全部无线终端或N9已经恢复**。D原有Stage RESET_PDMA0→WAIT_N9_NORMAL及ErrRecoveryEndDriverRestore继续保留，不新增另一套最终ACK作为缓存准入前提。
 
@@ -54,6 +54,8 @@ callback只恢复同一分配的有效表地址/大小及固定SMA、默认CPU�
 
 D在`:1229`改为有界wait（大于E停止/恢复deadline），醒来后先查结果；超时或ABORT：置fe_failed，保持StopRxDMA/原停止状态，停止后续普通数据调度，返回失败；**不执行后面的tm/qm/hif reset/free/reinit、IRQ/DMA enable或向N9报告成功**。后续MCU恢复事件也先检查fe_failed，不能从另一个case重新开启。这里不为了失败退出而free仍可能被硬件触及的资源。
 
+r3.1 选择 WARP 合同终态B：上述“返回失败/保持停止”仅适用于已有仍有效的quiescence证明、尚未重开DMA的错误；停止未确认则在任何普通err unwind前同步进入builtin E的noreturn硬件故障入口，尝试HARD系统复位，失败也不恢复正常执行。E等STOP超时且有未确认活动participant同样处理。相关D/W/E/proxy析构入口与本轮SER共享准入及fatal闩，不能随后ifdown又free；正常成功L1仍在线恢复，不为此禁WED/在线SER或新增PCI核心框架。实际调用链、SMP best effort限制与代价见 `bridge-r3-warp-stop-contract.md`。
+
 D notifier exit在unregister之前，若仍FE-waiting，自己置ABORT并complete，再按既有adapter退出合同drain工作；不能先移除通知者后把它留在无限FE等待。E若在RTNL外等STOP时观察participant退出，同样走sticky失败。该调整处理已有等待者寿命，不是新恢复框架。
 
 | 失败位置 | E/D明确行为 |
@@ -66,6 +68,8 @@ D notifier exit在unregister之前，若仍FE-waiting，自己置ABORT并complet
 | 重复NAT_DONE | 固定profile没有旧HNATwarm notifier，完全不改变ready/error/寄存器 |
 
 E失败路径不清错误后重排一轮；MTK_RESETTING/ser_active如何收尾须保持“不可重启”的错误字段可见，不能仅留下一个日志。当前源码`mtk_open`失败及其内部DMA allocation unwind还需实现审查，不能靠本文证明任意既有DMA错误路径已安全；本修复不得让HNAT FOE进入该free链。
+
+表内“STOP失败保持资源”不是允许未知DMA状态的系统继续正常运行：未确认停止走noreturn终态；已确认静止的QUIESCENT_FAILED可在本轮SER任务退出并可靠drain后转受控teardown许可，但不恢复普通数据或SER重试。新DMA/WO启动和新表暴露前撤销旧停止证明，不能用旧proof回收新资源。普通open/COMMIT在ser_active仍拒绝；仅worker的显式内部open在checked restore后可行，不以全局临时开门代替。
 
 ## 6. 修改边界与放行检查
 

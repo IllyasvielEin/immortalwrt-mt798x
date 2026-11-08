@@ -1,6 +1,6 @@
-# AX6000 通用桥转发最终设计 r3：固定软件转发
+# AX6000 通用桥转发最终设计 r3.1：固定软件转发
 
-2026-11-09，**设计复审稿，尚未获准实施**。工作区为 `ax6000/worktrees/bridge-forwarding`，分支 `fix/ax6000-bridge-forwarding`，实现基线 `c196312d3916fad77fa0bb47db57e4b685c15f03`。本轮只有文档和只读源码准备，未修改固件实现、推送、编译、操作或刷写路由器。
+2026-11-09，**r3.1 设计修订稿，尚未获准实施**。工作区为 `ax6000/worktrees/bridge-forwarding`，分支 `fix/ax6000-bridge-forwarding`，实现基线 `c196312d3916fad77fa0bb47db57e4b685c15f03`。原 r3 文档快照是 `0de772dce7dbbe27f73a793e72f6ed0927abf1df`，其独立审查关闭三项原 P1，仅剩 WARP STOP 真实性，见 [r3 审查](roaming-bridge-final-astra-review-r3.md)。本次补齐该有限依赖及 P2 实施要求，不恢复已裁剪的框架。当前只有文档和只读源码准备，未修改固件实现、推送、编译、操作或刷写路由器。
 
 ## 1. 目标、证据与本次范围选择
 
@@ -11,6 +11,8 @@
 用户指出改动规模超出预期，并要求隔离分支。范围复核发现：r2 为保留少数独立有线路径 PPE BIND，引出了全局拓扑 epoch、动态后端、pending 代际、账户维护及较大的 SER 协调框架。它们不是桥根本修复无条件需要的部分。
 
 **r3 拟采用固定软件转发能力：所有 PPE BIND 与 nf_flow 软件/硬件流缓存从本镜像启动起都关闭，保留 WED 的基础 DMA/token、收发、无线加密及已支持重排序。保留 MT7986 在线 L1 SER，只修固定慢路径的恢复顺序与错误出口。** 不采用范围比较稿中额外关闭在线 FE 恢复的候选。
+
+**r3.1 的新增失败策略拟选 WARP 合同终态 B：无法确认 DMA 停止/完成时，同步进入整机致命故障入口并尝试紧急硬重启；复位失败则不返回正常执行，可能需断电。** 发生 SER 与不可安全拒绝的销毁交叉时也采用该终态。正常成功 SER 继续在线恢复，普通包错和配置错误不触发此策略。代价是上述不可恢复故障会中断全机并可能丢未落盘状态；该取舍已向用户说明，尚非性能/刷机或此故障体验的验收。它替代“未知DMA仍活动、系统保持FAILED运行态”的庞大retain/热移除合同，不新增PCI核心框架。
 
 这项取舍已向用户说明并提供可选偏好；截至成稿尚未收到额外选择，依据“收敛改动”方向形成送审稿，不把未回复当成产品性能验收或刷机许可。若用户要求保留独立有线 PPE，必须另行回到完整能力合同复审，不能在本实现中悄然恢复绑定。
 
@@ -25,6 +27,7 @@
 - [BSS 阻流与激活](bridge-r3-activation-contract.md)：状态、lease、ioctl、netifd/ucode 错误传播；其第8节对动态 backend 的依赖由固定 CPU 合同替代。
 - [固定 CPU 激活收敛](bridge-r3-cpu-profile-activation.md)：不用全局 epoch，以配置快照和 COMMIT 时 RTNL 内实际核验替代。
 - [固定 CPU 最小 SER](bridge-r3-cpu-profile-ser.md)：保留现有 L1 恢复，永久 owner callback、checked restore、有界等待和 ABORT。
+- [WARP STOP 合同](bridge-r3-warp-stop-contract.md)：实际 D→proxy/WARP 的 checked 返回、停流确认、资源清理及失败 ACK 边界；补齐原 r3 的唯一 P1。
 - [范围比较](bridge-r3-scope-comparison.md)：源码依据及取舍历史。其中“禁止在线 FE 恢复”不被 r3 采用。
 - [packet ownership 依据](bridge-r3-packet-ownership.md)：只采用可信 native reason、释放责任和禁私有 producer 部分；保留有线 BIND 的账户/CT owner/epoch 方案不被 r3 采用。
 
@@ -37,6 +40,8 @@
 ## 3. 普通 AP RX：源授权完成后交桥一次
 
 保留实际 RX peer 的 Class2/3、关联上下文、ToDS/FromDS、PrivacyFilter、PortSecured、Radius、PN/MIC、解密、分片及重复包检查。在两个 `rx_*data_frm_announce()` 的普通数据准入处统一授权，不能等目的表命中才按 Ethernet SA 二次猜源。BA 正常在途接收语义沿用 Astra r2 已接受的边界，不新增站点指针/关联 generation/trylock 许可。
+
+配置 reader 的起点早于 announce：在两个 `dev_rx_*()`/`check_rx_pkt_allowed()` 已解析真实 `pEntry->wdev` 后、调用 `ops->rx_pkt_allowed` 读取配置之前，为规范 parser 判定的普通 AP 数据进入 READY/profile reader。覆盖同步 VLAN/隔离等配置读取，至队列接管或实际 handoff 才退出，所有提前返回配对释放。安全授权仍照常执行，通过后才 stamp RX lease；BLOCKED 时普通数据不能先进入这些配置读取。控制流使用独立分支。BA 出队在 common announce 读取 VLAN policy 前重新取得 reader，不补当前 lease。
 
 认证/握手保留现有 MLME/daemon 通道。规范纯解析 helper 有界区分 Ethernet II、VLAN、LLC/SNAP 与 EAPOL payload，覆盖前置 `rx_packet_process()` 的读取和两个 announce；不能只把 `RTMPCheckWPAframe(...,FALSE)` 改 TRUE。EtherType 在 Ethernet +12，跳14之后不是 EtherType。802.11 可变头/QoS 依实际长度，所有前置读取先验证边界；纯解析不执行 WPA 状态机副作用。
 
@@ -66,13 +71,17 @@
 
 parent netifd 为整个 BSS 及 VLAN descendants 持一个 activation owner：PREPARE 确认 → 配置 DAT/接口与全部真实 bridge/VLAN port → 写入并读回 hairpin/isolation/VLAN → STAGE_DOMAIN → COMMIT → mark_up。already-up、多个 claimant、任一 child 失败都不能部分放行。ifdown 失败但已确认阻流可清理本事务；不能取得 blocked 确认时不先 delif/release，保留拓扑并报错。
 
-COMMIT 在同一个 RTNL 临界区核验实际 netdev 对象、注册状态、直接 VLAN ancestry、bridge master、端口策略与 VLAN membership/PVID/untagged；不以多次用户态读回冒充原子事实。小型 bridge 内部检查 API 普通导出，仅回 errno/值，不泄露桥私有指针。核验和 READY 发布之间无可能失败的分配/用户拷贝/后端操作。没有全局 topology token。
+COMMIT 在同一个 RTNL 临界区核验实际 netdev 对象、注册状态、直接 VLAN ancestry、bridge master、端口策略的0/1两方向及完整 VLAN membership/PVID/untagged；不以多次用户态读回冒充原子事实。小型 bridge 内部检查 API 普通导出，仅回 errno/值，不泄露桥私有指针。handler 内的分配、核验和自身 copyout 完成后，仍在既定串行规则下复核 owner/token、状态和 sticky profile fault，才发布 READY；不在其后执行 handler 内可能失败的动作，没有全局 topology token。
+
+这不保证整个 native/compat ioctl syscall 在 handler 返回后绝无外层 copyout 失败。控制面将负返回/超时视作结果不确定，不据此推断 blocked 或继续 mark_up：先 GET，再重新 PREPARE，获得新的成功 blocked ACK 后才清理关系/重做配置。即使 handler 已短暂 COMMIT而外层返回失败，也走明确重新阻流流程；完整源码和故障注入核验外层行为，不为此改造通用 ioctl 框架。
 
 netifd C、system-linux、bridge/VLAN helper、device_set/interface_link、MTK notify/config.uc 和 wireless-device.uc 全链实际传播失败；不能 external release、日志、无条件 mark_up 代替阻流。所有受支持配置入口先 prepare；legacy 在线隔离/域 setter 在 READY 时拒改并要求正常 reload。RX/TX 和桥 ingress admission 发现 committed bridge 域失配时拒绝/闭锁，不自动扩大 standalone。
 
 ## 6. hairpin、隔离、VLAN 与 namespace
 
 内部 `wireless_bridge_forwarding` 能力经 MTK→wireless-device.uc→netifd，true/false 与 VLAN child 继承均落实。非隔离普通 AP hairpin=1，独立于 multicast_to_unicast/proxyarp；isolate 强制关闭并读回。NoForwarding 与 BTNBSSID 在 adapter 注册的 NF_BR_FORWARD 按实际 in/out AP/VLAN 身份执行，不按 DA STA、不用 skb_iif 猜桥入口。NoForwarding 拒同 BSS，BTNBSSID 拒同 adapter 不同 BSS；不以全端口 BR_ISOLATED 代替。隔离扩展至 group 是本版明确行为，网关与有线服务沿原网络策略。
+
+角色/capability 变 false 时也发送完整显式布尔组，netifd 清理旧派生 hairpin/isolate/proxyarp/bpdu_filter；不能只因“当前已不是 AP”跳过 active port 清零。两类 VLAN 在 ADD 前、parent policy 变化和 REMOVE 时递归重算/通知有效值，保留本地显式设置与继承值的区别。实际写回和读回失败逐层传播；上述行为在 prepare 阻流下进行，netns_local 生命周期约束不随之清除。
 
 增加有限 NF_BR_PRE_ROUTING admission 保护 committed AP 网络域；不能只在 FORWARD 核验，因为本机投递/路由同样需要正确 ingress。hook 只用 WdevListLock 复制注册映射/标志，不取 MacTabLock/RxReRingLock，不分配/等待。退出先停止新数据，再 unregister + 显式 synchronize_net，后释放 adapter/snapshot。hook 不能先拆掉却允许数据继续转发。
 
@@ -99,7 +108,7 @@ E 的所有正常 open 固定 GMAC→PDMA，不按 offload_version/L4S/TDMA 重�
 本版无需动态 packetops 的 RCU/SRCU registry：实际资源型 hooks 从未发布、软件维护 producer 从未启动。不是保留裸指针热切换后赌无并发。仍需以下最小资源合同：
 
 - HNAT 产品模块有 module_init、无 module_exit；CONFIG_MODULE_FORCE_UNLOAD 实际为 n。H 与 builtin E 设置 suppress_bind_attrs，禁 sysfs 解绑；本产品运行时 CONFIG_OF_OVERLAY=n，bootloader 合成 FDT 保留。
-- 冷 probe 第一次可能暴露 DMA 前失败，可以按实际分配位回收并返回错误。暴露后失败必须保持绑定 FAILED、资源/MMIO/引用，不走 devres/dma_free；返回0只用于保留 owner，状态查询和 activation 必须明确报失败，不能当功能成功。
+- 冷 probe 在 DMA 未暴露且尚未发布任何永久引用时失败，才可按实际分配位回收并返回错误。DMA 暴露或永久 callback/context 已发布后失败，必须保持绑定 FAILED、资源/MMIO/引用，不走 devres/dma_free；返回0只用于保留 owner，状态查询和 activation 必须明确报失败，不能当功能成功。永久 callback 在可失败冷准备之后、RTNL下最后发布，避免未写 BASE 但已发布 callback 的悬空 context。
 - 表不在正常配置、Wi-Fi reload 或 SER 换所有权/释放。原 destructive stop、debugfs enable/raw/cache 写等没有产品入口。仅已证明未暴露的资源可回收；不在 void remove 中打印错误后继续释放。
 - 无 cache/BIND 不意味着可忽略 WED、FE 或硬件 DMA。资源保留与关闭实际销毁入口仍是必要维护限制；不顺带重写 WARP 自有 ring 退出。
 
@@ -109,17 +118,31 @@ kernel 提供普通导出的只读 status helper，绑定本目标真实 E owner
 
 ## 9. P1-2：保留 L1 SER，恢复固定 profile 先于数据恢复
 
-准确顺序采用 [最小 SER 合同](bridge-r3-cpu-profile-ser.md)：共同 pending worker 首次硬件 touch 前置 notready/ser_active；MT7986 用 D 已实现的 START_RESET；RTNL 外有界等 STOP ACK；重取 RTNL 检查本轮状态，执行现有物理 stop/reset并检查 hw_init；**首次 mtk_open/Wi-Fi RESET_DONE之前**同步 checked restore 同一资源的 CPU profile；始终 PDMA，所有必需端口成功后才发 RESET_DONE。NAT_DONE 没有 warm/READY 权限。不存在跨 RTNL 的全局 nesting depth。
+准确顺序采用 [最小 SER 合同](bridge-r3-cpu-profile-ser.md) 与 [checked WARP STOP](bridge-r3-warp-stop-contract.md)：共同 pending worker 首次硬件 touch 前置 notready/ser_active；MT7986 用 D 已实现的 START_RESET；RTNL 外有界等 STOP ACK；重取 RTNL 检查本轮状态，执行物理 stop/reset并检查 hw_init；**首次 mtk_open/Wi-Fi RESET_DONE之前**同步 checked restore 同一资源的 CPU profile；始终 PDMA，所有必需端口成功后才发 RESET_DONE。NAT_DONE 没有 warm/READY 权限。不存在跨 RTNL 的全局 nesting depth。
+
+STOP 成功须包含实际 WARP 必要 engine 的 checked 停流，不能用现有固定返回0的 hook dispatcher、最后一个成功子步骤或 void WO 包装作凭据。D预置值型未完成结果，proxy的SER分支先于whnat_en早退调用checked helper并回写，缺listener/实际资源状态不明不成功。STOP只禁生产者、checked WO/engine idle，首错锁存和总deadline；保留ring/buffer，WO保持SER_RESET，不自动module fallback，不做软件ring/index重写。FE_DONE成功且未ABORT后才一次清理旧ring，再checked HIF/BM准备和WO/IRQ/DMA恢复。WO正的非零错误也失败，busy用真实BIT掩码，不能沿用RX_DMA_BUSY位号3的错误按位与。
+
+ABORT/sticky检查早于SER hook、阻塞动作返回后、清理/ACK前；自主Wi-Fi SER也遵守。失败且可能仍DMA则调用下述noreturn终态，不报告成功ACK、不返回普通err unwind。stop-fail即使E不在stop_waiting也锁存故障，不能触发旧fallback新一轮。正常确认停流才复用原ring清理；不关闭WED或在线SER绕过本项。
 
 D START 仅在现有 STOP_IDLE、无等待/失败时接受一次；STOP 用 atomic_xchg 只报告一次，E 只在 stop_waiting 接受本轮通知。成功周期的 STOP 同步交付，不残留到下一轮；ONLINE/OFFLINE 在等待期间使本轮失败而非改写剩余计数。D 前轮尚在 N9 恢复时拒第二 START，E 处理 notifier busy，不新增最终 N9 ACK 或 reset-id 框架。
 
-任何等待超时、成员变化、hw_init/restore/cache/读回/open失败进入 sticky 错误，不发成功 DONE，不重试下一轮。独立 ABORT 唤醒 D 等待，D 在 HIF free/reinit/IRQ-DMA enable 前先核结果；失败保持停止，迟到 DONE/MCU 事件不能重新开数据。退出先自唤醒等待者，再 unregister/drain。错误后可能需要重启，正常在线 L1 SER能力保留，不能把失败称业务无损。
+任何等待超时、成员变化、hw_init/restore/cache/读回/open失败先锁存sticky错误，不发成功DONE，不重试下一轮。若尚不能确认活动DMA已停止（包括E等不到STOP ACK），进入noreturn故障终态；若已经有有效停止证明且尚未重新暴露/启动DMA，则可保持blocked、保留资源并报告错误。独立ABORT只置错/唤醒，D在HIF free/reinit/IRQ-DMA enable前复核；迟到DONE/MCU事件不能复活。重开DMA/新资源暴露前撤销旧停止证明，不能据旧proof回收新资源。
+
+故障终态由builtin E的普通导出硬件故障API实现：原子发布同一fatal闩并关闭准入，由首个CPU选为复位执行者，设置REBOOT_HARD并直接进入arm64 machine_restart；其它进入者关本地中断并停留，不竞争锁或继续清理。不得排异步重启任务后返回，不经normal kernel_restart/device_shutdown、panic/kexec或用户态。API属于真实硬件owner故障处理，专有D/proxy不直接调用GPL-only emergency_restart。ARM64、E builtin、EFI=n及实际restart provider进入构建核验。
+
+SMP stop是best effort，故不能仅靠调用CPU不返回。WARP合同所列D close/HIF/adapterfree、真实rbus remove/module exit、proxy hook退出、W ring/client/remove/module exit及E DMA销毁入口共享本轮SER/teardown短状态准入，并先核fatal；SER开始与已有破坏性操作互斥，已进入清理则不开始SER，SER中不能可靠busy/defer的销毁交叉进入同一noreturn终态。匹配的一条同步SER控制栈仍可在已证明停止后执行计划内cleanup；普通外部close不能冒用此许可。不在RTNL close里等会取RTNL的HwCtrl，不增加PCI核心veto或运行态retain。proxy退出也必须在unregister前持这项准入，避免checked同步回调途中释放其代码。命中故障的void remove不返回，drivercore才不会继续devres释放。
+
+PSCI HARD system reset与MTK watchdog是实际源码候选；本CPU最终循环不代表硬件一定复位，其范围/完成、未停CPU、并发销毁guard和断电恢复均须实机验收。不能声称这种严重硬件故障仍安全继续正常运行。
+
+实施必须把 checked reset 逐层做到可检测错误源：现有 warm-reset 的 void/fallback/仅打印 poll 不能被顶层 int 返回0掩盖。SER worker 的内部 restart 使用受限共同 open helper，仅该控制栈在已 restore 后允许；ser_active 时普通 ndo_open/COMMIT 仍拒绝。第一个端口已开而后续失败，先撤 ready/sticky fail，再只用经确认的停止路径处理已开端口；未确认停机的DMA不走无条件dev_close/free unwind。
+
+参与者按真实硬件活动能力定义，不把probe ONLINE计数或 !START_UP 当停流证明。未启动对象必须在串行生命周期内确认无DMA/初始化活动，或完成checked静止确认再回无需停流；活动对象履行完整STOP。up/down/注册失败与成员变化均有明确出口，不给“模块已加载、无线未启动”制造必然超时，也不假报成功。子步骤的有界等待共同计入STOP总预算，D等待FE结果留出该预算，5秒只是待核初值。
 
 callback 是固定资源的同步恢复，不开放 BIND；没有必要为不存在的动态流创建全局 epoch/路径 proof、pending generation或最后 N9 加速放行。真实 FE/PPE reset 完成和 WED 停流语义仍是实现/硬件验收，不以软件状态取代。
 
 ## 10. P1-4：先确定包所有权，副本在源头终结
 
-E 在合法 DDONE/SoC RX descriptor 解码后、任何 head magic 重建/PPD redirect/GRO 之前；D 在 HIF gen_tuple 确认 PPE_VLD 后、WARP callback 之前分类，不能被旧 whnat_en 等运行时开关绕过。只信真实 descriptor，不信负载或普通 EtherType 0x5678。D 两个 HIF caller 使用既有 drop_pkt 释放和补环；不能在 void WARP helper free 后继续用。
+E 在合法 DDONE/SoC RX descriptor 解码后、任何 head magic 重建/PPD redirect/XDP/GRO 之前；D 在 HIF gen_tuple 确认 PPE_VLD 后、WARP callback 之前分类，不能被旧 whnat_en 等运行时开关绕过。只信真实 descriptor，不信负载或普通 EtherType 0x5678。D 两个 HIF caller 使用既有 drop_pkt 释放和补环；不能在 void WARP helper free 后继续用。建skb前消费与建skb后skip/refill使用各自正确ownership，不复用已free buffer；D helper只回drop结果并合并原错误位，不另行free。
 
 | 可信 producer 情形 | 动作 |
 | --- | --- |
@@ -142,9 +165,9 @@ E 在合法 DDONE/SoC RX descriptor 解码后、任何 head magic 重建/PPD red
 5. 最小 SER：上述固定资源恢复顺序、有界等待和失败出口。
 6. 产品配置、既有 eQoS 软件模式适配、生产 guard、真实 helper/状态机测试、维护与回滚文档。
 
-只在 Astra r3 设计通过后实施。不依赖043诊断，不写终端信息；不改 uBoot/MTK U-Boot布局或分区，保留生产/诊断引用。新内核/驱动 patch 基于准备好的实际 postimage 生成，再验证整系列，不直接破坏 overlay 前像。
+只在当前 r3.1 设计通过 Astra 复审后实施。不依赖043诊断，不写终端信息；不改 uBoot/MTK U-Boot布局或分区，保留生产/诊断引用。新内核/驱动 patch 基于准备好的实际 postimage 生成，再验证整系列，不直接破坏 overlay 前像。
 
-真实 helper 与故障注入必须覆盖：EAP封装/短包/伪装/混合聚合；VLAN demux/同MAC多VID；TX错wdev/WCID/DA和每聚合MSDU；lease撤销/clone-COW/新skb继承；default/already-up/child/multi-claimant/addif/hairpin/VLAN/down/commit失败；意外移桥不legacy；可信副本/私有异常与负载伪装；probe半初始化/暴露后失败、静态API无法BIND、cache/restore/open/ACK/ABORT失败。调用实际实现helper，不能复制算法或仅搜字符串替代。
+真实 helper 与故障注入必须覆盖：EAP封装/短包/伪装/混合聚合；VLAN demux/同MAC多VID；TX错wdev/WCID/DA和每聚合MSDU；lease撤销/clone-COW/新skb继承；default/already-up/child/multi-claimant/addif/hairpin/VLAN/down/commit/外层copyout失败；意外移桥不legacy；可信副本/私有异常与负载伪装；probe半初始化/永久callback发布后失败、静态API无法BIND、cache/restore/open/ACK/ABORT失败。WARP首项失败末项成功、WO正错误/timeout、busy位、无listener、whnat_en关闭但资源活、自主SER、ACK前ABORT、timer/tasklet自重排与SER/close/remove/proxy退出竞争，均须零次成功ACK、零次未确认停流的ring reset/free/unmap、零次HIF/IRQ/DMA恢复，并证明fatal入口不返回。测试调用实际helper，不能复制算法或仅搜字符串替代；真实硬重启不得无授权在路由器触发。
 
 完整 MT7986 kernel/driver/WARP/netifd/ucode 构建，核生成配置、模块 license/普通导出/undefined符号、extension边界、RRM/WNM/FT与现有生产 guard，锁定 feeds/Go/cache流程沿用。完成实际实现 Astra 审查后才推送 CI。用户通知编译完成，不持续跟踪，不自动刷机或发布正式 Release。
 

@@ -4,7 +4,18 @@
 
 **暂停已由用户随后发送的“可以继续”解除。下文保留暂停时快照；恢复后的当前状态以 README 与主设计为准。**
 
-## 恢复后进展（r3 复审前）
+## 恢复后进展
+
+### r3 审查之后的当前修订
+
+- Astra新增 `roaming-bridge-final-astra-review-r3.md`：原P1-1/P1-3/P1-4设计关闭，仅剩WARP STOP错误被吞掉、STOP ACK前释放DMA这一P1。原送审文档快照为Git `0de772dc`，报告保持独立不改。
+- 主稿现在为r3.1，补入 `bridge-r3-warp-stop-contract.md`：值型checked结果；STOP只确认停机、保留ring；成功FE_DONE后再清理/重建，WO/engine返回与首错/deadline真正传播。正常WED/L1 SER保留。
+- 为避免扩大运行态retain与PCI热移除改造，拟选明确终态B：无法确认DMA停止/完成或不可安全串行销毁时，同步进入整机noreturn故障入口尝试HARD复位；不走normal shutdown/panic/kexec，失败可能需断电。相关真实析构入口和proxy退出共享本轮SER准入/fatal guard，补足SMP停机best effort的局限。此新增故障体验已向用户说明，仍待Astra技术放行与后续产品验收。
+- 8个准确fatal/reset选定文件已下载并准备于 `.analysis/linux-6.12.112-fatal-postimage`，仅1个相关MTK WDT patch；有SHA/清单，非完整内核prepare。PSCI/WDT实际复位完成仍是硬件门。
+- P2已并入：早期reader先于rx_pkt_allowed配置读取、完整0/1策略/false传播、native/compat外层ioctl失败视不确定后GET+重新PREPARE、永久callback发布也是寿命承诺、下层reset错误/普通open与内部restart/实际活动participant及ownership补环要求。
+- 仅设计文档修改；未进入固件代码实施、推送、构建或路由器操作。下一步提交r3.1文档快照并新建Astra复审唯一P1及其有限依赖，通过后持续实施。
+
+### r3 首次送审前的记录
 
 - 已形成 `roaming-bridge-final-design-r3.md`，入口 `roaming-bridge-final-design.md` 指向该稿。
 - 根据范围担忧，拟采用固定全软件转发，取消所有 PPE/NF-flow cache，保留 WED 基础能力及最小在线 L1 SER；全局 topology epoch/动态 backend/保留 wired BIND 的账户框架不进入本版。已通过可选偏好问题向用户说明性能取舍，尚未收到额外选择；未把无回复当验收或刷机许可。
