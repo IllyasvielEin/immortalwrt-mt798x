@@ -4,7 +4,9 @@
 
 ## 当前状态
 
-Astra 首轮实际实现审查 **NO-GO**，见 [实现审查报告](roaming-bridge-implementation-astra-review.md)。该报告针对首轮实现 `692a32bd`；两项 P1 与一项 P3 已完成修正、针对性回归及受影响模块编译，修正 HEAD `34de212a`，等待独立复审。NO-GO 仍是当前最后一份独立实现审查结论。尚未通过实现复审、完整 CI 或硬件/性能验收，未推送、触发 CI、操作路由器或刷机。r3.1 原设计 GO 继续只作为实现预期。
+Astra 实际实现 R2 复审 **GO，仅限推送隔离分支进入一次完整生产 CI**，见 [R2 复审报告](roaming-bridge-implementation-astra-review-r2.md)。审查 HEAD `33c74ea5`；两项 P1 和一项 P3 均已关闭，在复审范围内未发现新阻断。该结论取代首轮 `692a32bd` 的 [NO-GO 报告](roaming-bridge-implementation-astra-review.md)，原报告保留为问题与修正依据。完整 CI、硬件及性能验收仍待完成，GO 不包含刷机或正式发布许可。
+
+本次只将 `fix/ax6000-bridge-forwarding` 推至 `origin`，运行 `build-redmi-ax6000.yml`，输入 `go_bootstrap=external`、`cold_cache=false`。包含本复审报告后的提交仅增加文档，生产实现保持已审查内容。触发回执、实际源码 SHA 和运行 URL 保存在本地 `.analysis/bridge-ci-dispatch-20261109.json`；不持续轮询，等待用户通知编译结果。
 
 第一次 Astra 实现审核被平台以“possible cybersecurity risk”过滤中止，未产出技术审查结论。该执行失败不代表代码 GO 或 NO-GO；仍保留审核通过后才推送编译的顺序。重提审核聚焦同一代码范围的路由器转发、资源生命周期、配置和编译正确性，不改变审查标准。
 
@@ -60,6 +62,6 @@ Astra 首轮实际实现审查 **NO-GO**，见 [实现审查报告](roaming-brid
 
 ## 下一验收顺序
 
-已完成两项 P1 和 P3 修正、真正消息并发/网络 reload 路径回归、生产补丁重放及受影响模块增量编译。下一步：Astra 复审 → 修复新阻断（如有）→ 通过后推送隔离分支并触发一版 CI。完整固件、硬件 DMA/WO/复位、任意终端漫游、隔离/VLAN/聚合、eQoS 和性能验收仍未完成；宿主适配测试不能证明真实 Linux RCU 调度或目标硅片行为。
+两项 P1 和 P3 修正、真正消息并发/网络 reload 路径回归、生产补丁重放、受影响模块增量编译及 Astra R2 复审均已完成。下一步：推送隔离分支并触发一版 CI → 等待用户通知结果 → 按实际构建结果继续验收。完整固件、硬件 DMA/WO/复位、任意终端漫游、隔离/VLAN/聚合、eQoS 和性能验收仍未完成；宿主适配测试不能证明真实 Linux RCU 调度或目标硅片行为。
 
 不持续轮询 CI，等用户通知编译完成。不自动刷机或发布正式 Release。后续实机验证需先只读确认重启后的状态，不沿用重启前的关联表/FDB；历史证据保留在 `ax6000/research/evidence`。
