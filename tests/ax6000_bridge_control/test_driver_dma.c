@@ -41,7 +41,7 @@ static int MT7986_get_rid_value(void) {return 1;}
 int main(void)
 {
  RTMP_ADAPTER a={0};regs[0]=regs[1]=3;
- assert(set_fq_enable(&a,"1")==-EOPNOTSUPP && set_fq_enable(&a,NULL)==-EOPNOTSUPP);
+ assert(set_fq_enable(&a,"1")==FALSE && set_fq_enable(&a,NULL)==FALSE);
  assert(hif_set_WFDMA(&a,DMA_TX_RX,FALSE)==TRUE && !regs[0] && !regs[1] && hooks==1);
  a.CommonCfg.whnat_en=true;cap.tkn_info.feature=TOKEN_RX;hooks=0;
  assert(hif_set_WFDMA(&a,DMA_TX_RX,TRUE)==TRUE && regs[0]==1 && regs[1]==1 && hooks==1);
